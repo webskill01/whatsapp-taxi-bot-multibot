@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.production
+!.env.example
+
+# ✅ WhatsApp Session Files (CRITICAL - Keep private!)
+**/baileys_auth/
+**/baileys_auth/**
+baileys_auth/
+.wwebjs_auth/
+.wwebjs_cache/
+
+# ✅ QR Code Images (Generated files)
+**/qr-codes/*.png
+**/qr-codes/*.jpg
+qr-codes/
+
+# ✅ Fingerprint Cache (Auto-generated per bot)
+**/.forwarded-messages.json
+.forwarded-messages.json
+
+# PM2
+.pm2/
+ecosystem.config.cjs
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Development
+my-whatsapp-groups.csv
+my-whatsapp-groups.json
+test/
+temp/
+
+# Build outputs
+dist/
+build/
+
+# Docker (if you decide to use it later)
+docker-compose.override.yml
+
+# Redis data (if using Docker)
+redis-data/
