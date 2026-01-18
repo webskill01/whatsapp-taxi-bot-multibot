@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>📱 Scan QR Code</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 20px;
+      padding: 40px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-width: 500px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .bot-header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 30px;
+    }
+
+    .bot-icon {
+      font-size: 4em;
+      margin-right: 20px;
+    }
+
+    .bot-info h1 {
+      font-size: 2em;
+      color: #333;
+      margin-bottom: 5px;
+    }
+
+    .bot-info .port {
+      color: #666;
+      font-size: 0.9em;
+    }
+
+    .status {
+      padding: 15px 25px;
+      border-radius: 10px;
+      font-size: 1.1em;
+      font-weight: 600;
+      margin: 20px 0;
+      display: inline-block;
+    }
+
+    .status.connected {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .status.waiting {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .status.error {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    .qr-container {
+      margin: 30px 0;
+      position: relative;
+      min-height: 300px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #qr-image {
+      max-width: 100%;
+      height: auto;
+      border-radius: 10px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+      transition: opacity 0.3s ease;
+    }
+
+    #qr-image.loading {
+      opacity: 0.5;
+    }
+
+    .refresh-indicator {
+      position: absolute;
+      font-size: 3em;
+      animation: spin 1s linear infinite;
+      display: none;
+    }
+
+    .refresh-indicator.active {
+      display: block;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .instructions {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 10px;
+      margin: 20px 0;
+      text-align: left;
+    }
+
+    .instructions h3 {
+      color: #333;
+      margin-bottom: 15px;
+      font-size: 1.2em;
+    }
+
+    .instructions ol {
+      margin-left: 20px;
+      color: #666;
+      line-height: 1.8;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 30px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 15px 25px;
+      border: none;
+      border-radius: 10px;
+      font-size: 1em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: scale(1.05);
+    }
+
+    .btn-secondary {
+      background: #f8f9fa;
+      color: #333;
+      border: 2px solid #dee2e6;
+    }
+
+    .btn-secondary:hover {
+      background: #e9ecef;
+    }
+
+    .timer {
+      margin-top: 15px;
+      color: #666;
+      font-size: 0.9em;
+    }
+
+    .success-animation {
+      animation: successPulse 0.6s ease;
+    }
+
+    @keyframes successPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="bot-header">
+      <div class="bot-icon" id="bot-icon">🤖</div>
+      <div class="bot-info">
+        <h1 id="bot-name">Loading...</h1>
+        <div class="port" id="bot-port">Port: ----</div>
+      </div>
+    </div>
+
+    <div id="status" class="status waiting">⏳ Loading...</div>
+
+    <div class="qr-container">
+      <img id="qr-image" src="" alt="QR Code" class="hidden">
+      <div class="refresh-indicator" id="refresh-indicator">🔄</div>
+    </div>
+
+    <div class="instructions" id="instructions">
+      <h3>📱 How to Connect:</h3>
+      <ol>
+        <li>Open WhatsApp on your phone</li>
+        <li>Tap <strong>Menu (⋮)</strong> or <strong>Settings</strong></li>
+        <li>Tap <strong>Linked Devices</strong></li>
+        <li>Tap <strong>Link a Device</strong></li>
+        <li>Point your phone at this screen to scan the QR code</li>
+      </ol>
+    </div>
+
+    <div class="timer" id="timer">
+      Next refresh in: <strong id="countdown">5</strong>s
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" onclick="manualRefresh()">🔄 Refresh Now</button>
+      <a href="/" class="btn btn-secondary">🏠 Dashboard</a>
+    </div>
+  </div>
+
+  <script>
+    const HOST = window.location.hostname;
+    const urlParams = new URLSearchParams(window.location.search);
+    const BOT_PORT = urlParams.get('port') || '3001';
+    const API_URL = `http://${HOST}:${BOT_PORT}`;
+
+    let intervalId;
+    let countdownId;
+    let countdown = 5;
+
+    function getBotIcon(name) {
+      const icons = {
+        'delhi': '🏛️', 'mumbai': '🌊', 'bangalore': '💻',
+        'chennai': '🏖️', 'kolkata': '🎭', 'hyderabad': '💎',
+        'pune': '🏰', 'ahmedabad': '🕌', 'jaipur': '🐘'
+      };
+      const nameLower = (name || '').toLowerCase();
+      for (const [key, icon] of Object.entries(icons)) {
+        if (nameLower.includes(key)) return icon;
+      }
+      return '🤖';
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch(`${API_URL}/status`);
+        const data = await res.json();
+        
+        const statusDiv = document.getElementById('status');
+        const qrImage = document.getElementById('qr-image');
+        const instructions = document.getElementById('instructions');
+        
+        // Update bot info
+        if (data.botName) {
+          document.getElementById('bot-name').textContent = data.botName;
+          document.getElementById('bot-icon').textContent = getBotIcon(data.botName);
+          document.title = `📱 ${data.botName} - Scan QR`;
+        }
+        document.getElementById('bot-port').textContent = `Port: ${BOT_PORT}`;
+        
+        if (data.connected) {
+          statusDiv.className = 'status connected success-animation';
+          statusDiv.textContent = '✅ Connected to WhatsApp!';
+          qrImage.classList.add('hidden');
+          instructions.classList.add('hidden');
+          clearInterval(intervalId);
+          clearInterval(countdownId);
+          
+          setTimeout(() => {
+            if (confirm('✅ Bot connected successfully!\n\nReturn to dashboard?')) {
+              window.location.href = '/';
+            }
+          }, 2000);
+        } else if (data.qrAvailable) {
+          statusDiv.className = 'status waiting';
+          statusDiv.textContent = '📱 Scan this QR code with WhatsApp';
+          instructions.classList.remove('hidden');
+          loadQR();
+        } else {
+          statusDiv.className = 'status waiting';
+          statusDiv.textContent = '⏳ Waiting for QR code...';
+          qrImage.classList.add('hidden');
+        }
+      } catch (err) {
+        console.error('Status check failed:', err);
+        const statusDiv = document.getElementById('status');
+        statusDiv.className = 'status error';
+        statusDiv.textContent = '❌ Cannot connect to bot. Is it running?';
+      }
+    }
+
+    function loadQR() {
+      const img = document.getElementById('qr-image');
+      const refreshIndicator = document.getElementById('refresh-indicator');
+      
+      img.classList.add('loading');
+      refreshIndicator.classList.add('active');
+      
+      const newSrc = `${API_URL}/qr?t=${Date.now()}`;
+      
+      img.onload = () => {
+        img.classList.remove('loading', 'hidden');
+        refreshIndicator.classList.remove('active');
+      };
+      
+      img.onerror = () => {
+        img.classList.add('hidden');
+        refreshIndicator.classList.remove('active');
+      };
+      
+      img.src = newSrc;
+      countdown = 5;
+    }
+
+    function manualRefresh() {
+      loadQR();
+      checkStatus();
+    }
+
+    function updateCountdown() {
+      document.getElementById('countdown').textContent = countdown;
+      countdown--;
+      if (countdown < 0) countdown = 5;
+    }
+
+    checkStatus();
+    intervalId = setInterval(() => {
+      checkStatus();
+      countdown = 5;
+    }, 5000);
+    countdownId = setInterval(updateCountdown, 1000);
+  </script>
+</body>
+</html>

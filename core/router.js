@@ -76,19 +76,19 @@ function getRandomDelay(min, max) {
 async function simulateTyping(textLength) {
   const baseTime = textLength * getRandomDelay(30, 50);
   const typingTime = Math.min(
-    Math.max(baseTime, HUMAN_DELAYS.MIN_TYPING_TIME),
-    HUMAN_DELAYS.MAX_TYPING_TIME
+    Math.max(baseTime, HUMAN_DELAYS.minTypingTime),
+    HUMAN_DELAYS.maxTypingTime
   );
   log.info(`⌨️  Typing: ${(typingTime / 1000).toFixed(1)}s`);
   await new Promise(resolve => setTimeout(resolve, typingTime));
 }
 
 async function maybeRandomPause() {
-  if (Math.random() < HUMAN_DELAYS.RANDOM_PAUSE_CHANCE) {
+  if (Math.random() < HUMAN_DELAYS.randomPauseChance) {
     stats.humanPausesTriggered++;
     const pauseDuration = getRandomDelay(
-      HUMAN_DELAYS.RANDOM_PAUSE_DURATION,
-      HUMAN_DELAYS.RANDOM_PAUSE_DURATION + 3000
+      HUMAN_DELAYS.randomPauseDuration,
+      HUMAN_DELAYS.randomPauseDuration + 3000
     );
     log.info(`☕ Random pause: ${(pauseDuration / 1000).toFixed(1)}s`);
     await new Promise(resolve => setTimeout(resolve, pauseDuration));
@@ -546,3 +546,26 @@ export function cleanupRouter(config) {
 
   log.info(`🧹 Router cleanup complete`);
 }
+
+// ✅ Periodic memory cleanup (every 30 minutes)
+setInterval(() => {
+  // Force garbage collection if available
+  if (global.gc) {
+    global.gc();
+    log.info(`🧹 Manual GC triggered`);
+  }
+  
+  // Clean old in-flight sends
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [groupId, timestamp] of inFlightSends.entries()) {
+    if (now - timestamp > 300000) { // 5 minutes
+      inFlightSends.delete(groupId);
+      cleaned++;
+    }
+  }
+  
+  if (cleaned > 0) {
+    log.info(`🧹 Cleaned ${cleaned} stale in-flight sends`);
+  }
+}, 1800000); // 30 minutes

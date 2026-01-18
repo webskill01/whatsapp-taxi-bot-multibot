@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🤖 Multi-Bot Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      color: white;
+      padding: 40px 20px;
+    }
+
+    header h1 {
+      font-size: 3em;
+      margin-bottom: 10px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+
+    header p {
+      font-size: 1.2em;
+      opacity: 0.9;
+    }
+
+    .config-section {
+      background: white;
+      border-radius: 15px;
+      padding: 20px;
+      margin-bottom: 30px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+
+    .config-section h2 {
+      margin-bottom: 15px;
+      color: #333;
+    }
+
+    .port-list {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 15px;
+    }
+
+    .port-input {
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      width: 100px;
+      font-size: 1em;
+    }
+
+    .btn-add {
+      padding: 10px 20px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .btn-add:hover {
+      opacity: 0.9;
+    }
+
+    .bots-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 30px;
+      margin-top: 20px;
+    }
+
+    .bot-card {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .bot-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+    }
+
+    .bot-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 5px;
+      background: linear-gradient(90deg, #667eea, #764ba2);
+    }
+
+    .bot-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .bot-icon {
+      font-size: 3em;
+      margin-right: 15px;
+    }
+
+    .bot-info h2 {
+      font-size: 1.5em;
+      color: #333;
+      margin-bottom: 5px;
+    }
+
+    .bot-info .port {
+      color: #666;
+      font-size: 0.9em;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.9em;
+      font-weight: 600;
+      margin: 10px 0;
+    }
+
+    .status.connected {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .status.disconnected {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .status.offline {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    .status.loading {
+      background: #e7e7e7;
+      color: #666;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 12px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      display: inline-block;
+      text-align: center;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: scale(1.05);
+    }
+
+    .btn-secondary {
+      background: #f8f9fa;
+      color: #333;
+      border: 2px solid #dee2e6;
+    }
+
+    .btn-secondary:hover {
+      background: #e9ecef;
+    }
+
+    .stats {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+      font-size: 0.9em;
+      color: #666;
+    }
+
+    .stats-item {
+      display: flex;
+      justify-content: space-between;
+      margin: 5px 0;
+    }
+
+    footer {
+      text-align: center;
+      color: white;
+      padding: 40px 20px;
+      margin-top: 60px;
+      opacity: 0.8;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .loading {
+      animation: pulse 1.5s infinite;
+    }
+
+    .info-box {
+      background: #e3f2fd;
+      padding: 15px;
+      border-radius: 10px;
+      margin-top: 20px;
+      color: #1565c0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🤖 Multi-Bot Dashboard</h1>
+      <p>Manage your WhatsApp taxi bots</p>
+    </header>
+
+    <div class="config-section">
+      <h2>🔧 Configure Bot Ports</h2>
+      <p style="color: #666; margin-bottom: 15px;">
+        Add ports for each bot (from their .env files). Example: bot-delhi uses 3001, bot-mumbai uses 3002, etc.
+      </p>
+      <div class="port-list" id="port-list">
+        <input type="number" class="port-input" placeholder="3001" value="3001">
+        <input type="number" class="port-input" placeholder="3002" value="3002">
+        <input type="number" class="port-input" placeholder="3003" value="3003">
+      </div>
+      <button class="btn-add" onclick="addPortInput()">➕ Add Port</button>
+      <button class="btn-add" onclick="refreshBots()">🔄 Refresh Bots</button>
+      
+      <div class="info-box">
+        💡 <strong>Tip:</strong> The dashboard auto-detects bot names from each port's /status endpoint
+      </div>
+    </div>
+
+    <div class="bots-grid" id="bots-grid">
+      <!-- Bots will be loaded here dynamically -->
+    </div>
+
+    <footer>
+      <p>💡 Click "Scan QR" to connect a bot to WhatsApp</p>
+      <p>Made with ❤️ for taxi businesses</p>
+    </footer>
+  </div>
+
+  <script>
+    const HOST = window.location.hostname;
+    const API_URL = `http://${HOST}:${BOT_PORT}`;
+    function addPortInput() {
+      const portList = document.getElementById('port-list');
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.className = 'port-input';
+      input.placeholder = '300X';
+      portList.insertBefore(input, portList.lastChild);
+    }
+
+    function getPorts() {
+      const inputs = document.querySelectorAll('.port-input');
+      return Array.from(inputs)
+        .map(input => parseInt(input.value))
+        .filter(port => port > 0 && port < 65536);
+    }
+
+    async function checkBotStatus(port) {
+      try {
+        const res = await fetch(`http://localhost:${port}/status`);
+        const data = await res.json();
+        return { ...data, port, online: true };
+      } catch (err) {
+        return { connected: false, qrAvailable: false, port, online: false };
+      }
+    }
+
+    async function getBotStats(port) {
+      try {
+        const res = await fetch(`http://localhost:${port}/stats`);
+        const data = await res.json();
+        return data;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function getBotIcon(name) {
+      const icons = {
+        'delhi': '🏛️',
+        'mumbai': '🌊',
+        'bangalore': '💻',
+        'chennai': '🏖️',
+        'kolkata': '🎭',
+        'hyderabad': '💎',
+        'pune': '🏰',
+        'ahmedabad': '🕌',
+        'jaipur': '🐘',
+        'lucknow': '🏛️'
+      };
+      
+      const nameLower = (name || '').toLowerCase();
+      for (const [key, icon] of Object.entries(icons)) {
+        if (nameLower.includes(key)) return icon;
+      }
+      return '🤖';
+    }
+
+    async function renderBot(port) {
+      const status = await checkBotStatus(port);
+      const stats = await getBotStats(port);
+
+      let statusClass = 'loading';
+      let statusText = '⏳ Checking...';
+      let botName = status.botName || `Bot Port ${port}`;
+      let botIcon = getBotIcon(botName);
+
+      if (!status.online) {
+        statusClass = 'offline';
+        statusText = '❌ Offline';
+      } else if (status.connected) {
+        statusClass = 'connected';
+        statusText = '✅ Connected';
+      } else if (status.qrAvailable) {
+        statusClass = 'disconnected';
+        statusText = '📱 QR Ready';
+      } else {
+        statusClass = 'disconnected';
+        statusText = '⏳ Starting...';
+      }
+
+      let statsHTML = '';
+      if (stats && stats.messageCount) {
+        statsHTML = `
+          <div class="stats">
+            <div class="stats-item">
+              <span>📨 Today:</span>
+              <strong>${stats.messageCount.daily || 0}/${stats.config?.rateLimits?.daily || '?'}</strong>
+            </div>
+            <div class="stats-item">
+              <span>⏱️ This hour:</span>
+              <strong>${stats.messageCount.hourly || 0}/${stats.config?.rateLimits?.hourly || '?'}</strong>
+            </div>
+            <div class="stats-item">
+              <span>✅ Processed:</span>
+              <strong>${stats.stats?.processed || 0}</strong>
+            </div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="bot-card">
+          <div class="bot-header">
+            <div class="bot-icon">${botIcon}</div>
+            <div class="bot-info">
+              <h2>${botName}</h2>
+              <div class="port">Port: ${port}</div>
+            </div>
+          </div>
+          
+          <div class="status ${statusClass}">${statusText}</div>
+          
+          ${statsHTML}
+          
+          <div class="actions">
+            <a href="/qr-scanner.html?port=${port}" 
+               class="btn btn-primary"
+               ${!status.online ? 'style="opacity:0.5;pointer-events:none;"' : ''}>
+              📱 Scan QR
+            </a>
+            <a href="http://localhost:${port}/stats" 
+               target="_blank" 
+               class="btn btn-secondary"
+               ${!status.online ? 'style="opacity:0.5;pointer-events:none;"' : ''}>
+              📊 Stats
+            </a>
+          </div>
+        </div>
+      `;
+    }
+
+    async function refreshBots() {
+      const grid = document.getElementById('bots-grid');
+      const ports = getPorts();
+      
+      if (ports.length === 0) {
+        grid.innerHTML = '<p style="color:white;text-align:center;">No ports configured. Add some above!</p>';
+        return;
+      }
+      
+      grid.innerHTML = '<p style="color:white;text-align:center;">Loading bots...</p>';
+      
+      const botsHTML = await Promise.all(ports.map(port => renderBot(port)));
+      grid.innerHTML = botsHTML.join('');
+    }
+
+    // Initial render
+    refreshBots();
+
+    // Auto-refresh every 5 seconds
+    setInterval(refreshBots, 5000);
+  </script>
+</body>
+</html>

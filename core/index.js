@@ -8,8 +8,6 @@ import { Boom } from '@hapi/boom';
 import express from 'express';
 import qrcode from 'qrcode-terminal';
 import QRCode from 'qrcode';
-import fs from 'fs';
-import path from 'path';
 import pino from 'pino';
 
 import { log } from './logger.js';
@@ -20,23 +18,19 @@ import { routeMessage, getRouterStats } from './router.js';
 // ============================================================================
 
 let sock = null;
-let qrImagePath = null;
+let currentQR = null; // ✅ Store QR string instead of file path
 let isConnected = false;
-let botConfig = null; // Store config for message processing
+let botConfig = null;
 
 // ============================================================================
 // BAILEYS CONNECTION
 // ============================================================================
 
 export async function connectToWhatsApp(botDir, config, ENV) {
-  // Store config globally for message handler
   botConfig = config;
   
   const { state, saveCreds } = await useMultiFileAuthState(ENV.AUTH_DIR);
-  
   const { version } = await fetchLatestBaileysVersion();
-
-  // Create logger
   const logger = pino({ level: 'silent' });
 
   sock = makeWASocket({
@@ -50,11 +44,11 @@ export async function connectToWhatsApp(botDir, config, ENV) {
     markOnlineOnConnect: false,
   });
 
-  // ✅ QR CODE HANDLING (3 methods)
+  // ✅ QR CODE HANDLING
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // 1. Show QR in terminal
+    // 1. Generate and show QR
     if (qr) {
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📱 SCAN THIS QR CODE:');
@@ -62,17 +56,10 @@ export async function connectToWhatsApp(botDir, config, ENV) {
       qrcode.generate(qr, { small: true });
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-      // 2. Save QR as PNG
-      const timestamp = Date.now();
-      qrImagePath = path.join(ENV.QR_DIR, `qr-${timestamp}.png`);
-      
-      try {
-        await QRCode.toFile(qrImagePath, qr);
-        log.info(`💾 QR saved: ${qrImagePath}`);
-        log.info(`🌐 QR available at: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
-      } catch (err) {
-        log.error(`❌ Failed to save QR: ${err.message}`);
-      }
+      // 2. Store QR string for API (no file saving)
+      currentQR = qr;
+      log.info(`🔄 QR code refreshed`);
+      log.info(`🌐 QR available at: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
     }
 
     if (connection === 'close') {
@@ -85,6 +72,7 @@ export async function connectToWhatsApp(botDir, config, ENV) {
 
       if (shouldReconnect) {
         isConnected = false;
+        currentQR = null; // ✅ Clear QR on disconnect
         setTimeout(() => {
           connectToWhatsApp(botDir, config, ENV);
         }, 3000);
@@ -92,7 +80,7 @@ export async function connectToWhatsApp(botDir, config, ENV) {
     } else if (connection === 'open') {
       log.info('✅ WhatsApp Connected!');
       isConnected = true;
-      qrImagePath = null; // Clear QR after successful connection
+      currentQR = null; // ✅ Clear QR after successful connection
     }
   });
 
@@ -104,7 +92,6 @@ export async function connectToWhatsApp(botDir, config, ENV) {
 
     for (const message of messages) {
       try {
-        // Use router for multi-pipeline processing
         await routeMessage(sock, message, botConfig);
       } catch (error) {
         log.error(`❌ Route error: ${error.message}`);
@@ -121,24 +108,96 @@ export async function connectToWhatsApp(botDir, config, ENV) {
 
 export function startQRServer(ENV, config) {
   const app = express();
-
-  // 3. Serve QR via HTTP
-  app.get('/qr', (req, res) => {
-    if (!qrImagePath || !fs.existsSync(qrImagePath)) {
-      return res.status(404).json({ 
-        error: 'No QR code available',
-        message: 'Either already connected or QR not yet generated'
+  app.use(express.static('public'));
+  
+  // ✅ Serve QR via HTTP as PNG image
+  app.get('/qr', async (req, res) => {
+    // Check if already connected
+    if (isConnected) {
+      return res.status(200).json({ 
+        success: true,
+        message: 'WhatsApp is already connected',
+        connected: true
       });
     }
 
-    res.sendFile(qrImagePath);
+    // Check if QR exists
+    if (!currentQR) {
+      return res.status(404).json({ 
+        error: 'No QR code available',
+        message: 'QR not yet generated. Please wait...',
+        connected: false
+      });
+    }
+
+    try {
+      // ✅ Generate QR as PNG buffer in memory (no file saving)
+      const qrBuffer = await QRCode.toBuffer(currentQR, {
+        type: 'png',
+        width: 400,
+        margin: 2
+      });
+
+      // Send as image
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.send(qrBuffer);
+    } catch (error) {
+      log.error(`❌ Failed to generate QR: ${error.message}`);
+      res.status(500).json({ 
+        error: 'Failed to generate QR code',
+        message: error.message
+      });
+    }
+  });
+
+  // ✅ Get QR as base64 (alternative endpoint)
+  app.get('/qr/base64', async (req, res) => {
+    if (isConnected) {
+      return res.json({ 
+        success: true,
+        message: 'WhatsApp is already connected',
+        connected: true
+      });
+    }
+
+    if (!currentQR) {
+      return res.status(404).json({ 
+        error: 'No QR code available',
+        message: 'QR not yet generated. Please wait...',
+        connected: false
+      });
+    }
+
+    try {
+      const qrDataURL = await QRCode.toDataURL(currentQR, {
+        width: 400,
+        margin: 2
+      });
+
+      res.json({
+        success: true,
+        qr: qrDataURL,
+        message: 'Scan this QR code with WhatsApp',
+        connected: false
+      });
+    } catch (error) {
+      log.error(`❌ Failed to generate QR: ${error.message}`);
+      res.status(500).json({ 
+        error: 'Failed to generate QR code',
+        message: error.message
+      });
+    }
   });
 
   app.get('/status', (req, res) => {
     res.json({
       connected: isConnected,
-      qrAvailable: qrImagePath !== null && fs.existsSync(qrImagePath),
+      qrAvailable: currentQR !== null,
       botName: ENV.BOT_NAME,
+      timestamp: Date.now()
     });
   });
 
@@ -164,7 +223,8 @@ export function startQRServer(ENV, config) {
   app.get('/groups', async (req, res) => {
     if (!sock || !isConnected) {
       return res.status(503).json({ 
-        error: 'WhatsApp not connected' 
+        error: 'WhatsApp not connected',
+        message: 'Please scan QR code first'
       });
     }
 
@@ -173,17 +233,15 @@ export function startQRServer(ENV, config) {
       const groups = Object.values(groupsDict).map(g => ({
         id: g.id,
         name: g.subject,
-        participantsCount: g.participants.length,
-        owner: g.owner,
-        creation: g.creation,
-        description: g.desc
+        participantsCount: g.participants.length
       }));
 
-      // Categorize groups based on config
+      // ✅ Categorize groups with proper sorting
       const categorized = groups.map(g => {
         let type = 'other';
         let category = 'Unmonitored';
 
+        // Check if source group
         if (config.sourceGroupIds.includes(g.id)) {
           type = 'source';
           category = 'Source Group';
@@ -201,24 +259,77 @@ export function startQRServer(ENV, config) {
         return { ...g, type, category };
       });
 
+      // ✅ Sort by type priority
+      const sortOrder = { source: 1, pipeline: 2, other: 3 };
+      categorized.sort((a, b) => {
+        const orderA = sortOrder[a.type] || 99;
+        const orderB = sortOrder[b.type] || 99;
+        if (orderA !== orderB) {
+          return orderA - orderB;
+        }
+        // Sort by name within same type
+        return (a.name || '').localeCompare(b.name || '');
+      });
+
       res.json({
         success: true,
         totalGroups: groups.length,
+        connectedAs: sock.user?.id || 'Unknown',
+        breakdown: {
+          source: categorized.filter(g => g.type === 'source').length,
+          pipeline: categorized.filter(g => g.type === 'pipeline').length,
+          other: categorized.filter(g => g.type === 'other').length,
+        },
         groups: categorized
       });
 
     } catch (error) {
       log.error('❌ Failed to get groups:', error);
       res.status(500).json({ 
-        error: error.message 
+        error: error.message,
+        success: false
       });
     }
   });
 
+  app.get('/health', (req, res) => {
+    const routerStats = getRouterStats();
+    const uptime = process.uptime();
+    const memUsage = process.memoryUsage();
+    
+    const health = {
+      status: isConnected ? 'healthy' : 'unhealthy',
+      uptime: Math.floor(uptime),
+      uptimeHuman: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+      whatsapp: {
+        connected: isConnected,
+        user: sock?.user?.id || null
+      },
+      memory: {
+        heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+        heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
+        rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`
+      },
+      stats: {
+        processed: routerStats.stats.processed,
+        hourly: `${routerStats.messageCount.hourly}/${config.rateLimits.hourly}`,
+        daily: `${routerStats.messageCount.daily}/${config.rateLimits.daily}`
+      },
+      circuitBreaker: {
+        open: routerStats.circuitBreaker.isOpen,
+        failures: routerStats.circuitBreaker.failureCount
+      }
+    };
+    
+    res.status(isConnected ? 200 : 503).json(health);
+  });
+
   app.listen(ENV.QR_SERVER_PORT, () => {
     log.info(`🌐 QR Server: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
+    log.info(`🌐 QR Base64: http://localhost:${ENV.QR_SERVER_PORT}/qr/base64`);
     log.info(`📊 Stats: http://localhost:${ENV.QR_SERVER_PORT}/stats`);
     log.info(`👥 Groups: http://localhost:${ENV.QR_SERVER_PORT}/groups`);
+    log.info(`💚 Health: http://localhost:${ENV.QR_SERVER_PORT}/health`);
   });
 }
 
