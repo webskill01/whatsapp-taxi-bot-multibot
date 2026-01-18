@@ -1,15 +1,16 @@
 const ROUTE_PATTERNS = [
-  /\bfrom\b.+\bto\b/i,
-  /\bto\b.+\bfrom\b/i,
-  /\b\w+\s+to\s+\w+/i,
-  /pickup/i,
-  /drop/i,
+  /\bfrom\s+[a-z0-9\s]{3,40}\s+to\s+[a-z0-9\s]{3,40}/i,
+  /\bpickup\s+[a-z0-9\s]{3,40}\s+to\s+[a-z0-9\s]{3,40}/i,
+  /\b[a-z0-9\s]{3,40}\s+(?:to|tu|too|ton)\s+[a-z0-9\s]{3,40}/i,
+  /\bpickup\b/i,
+  /\bdrop\b/i
 ];
 
 function normalizeText(text) {
   if (!text) return "";
 
   return text
+    .replace(/[\r\n]+/g, " ")
     .replace(/[\u{1F600}-\u{1F64F}]/gu, "")
     .replace(/[\u{1F300}-\u{1F5FF}]/gu, "")
     .replace(/[\u{1F680}-\u{1F6FF}]/gu, "")
@@ -18,7 +19,7 @@ function normalizeText(text) {
     .replace(/[\u{2700}-\u{27BF}]/gu, "")
     .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, "")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]+/g, " ")
     .trim()
     .toLowerCase();
 }
@@ -43,14 +44,10 @@ export function hasPhoneNumber(text) {
     /\d{4}[-\s]\d{6}/,
     /\d{2}[-\s]\d{8}/,
     /\d{3}[-]\d{3}[-]\d{4}/,
-    /\b\d{10,12}\b/,
+    /\b\d{10,12}\b/
   ];
 
-  return phonePatterns.some((pattern) => pattern.test(text));
-}
-
-function escapeRegex(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return phonePatterns.some(pattern => pattern.test(text));
 }
 
 function normalizePhoneNumber(phoneNumber) {
@@ -65,15 +62,12 @@ export function containsBlockedNumber(text, blockedNumbers) {
 
   for (const blockedNumber of blockedNumbers) {
     const normalizedBlocked = normalizePhoneNumber(blockedNumber);
-
     if (!normalizedBlocked) continue;
 
-    if (normalizedText.includes(normalizedBlocked)) {
-      return true;
-    }
-
-    const withCountryCode = "91" + normalizedBlocked;
-    if (normalizedText.includes(withCountryCode)) {
+    if (
+      normalizedText.includes(normalizedBlocked) ||
+      normalizedText.includes("91" + normalizedBlocked)
+    ) {
       return true;
     }
   }
@@ -355,8 +349,10 @@ export function extractCitiesForPipelines(text, pipelines) {
   // ============================================================================
   // PATTERN 1: "from X to Y"
   // ============================================================================
-  const fromToPattern =
-  new RegExp(`\\bfrom\\s+([a-z\\s]+?)\\s+${TO_WORD}[.\\s]+([a-z\\s]+?)(?:\\s|$|[^a-z])`, 'i');
+  const fromToPattern = new RegExp(
+  `\\bfrom\\s+([^\\n\\r]+?)\\s+${TO_WORD}[.\\s]+([^\\n\\r]+?)(?:\\s|$)`,
+  'i'
+);
   const fromToMatch = normalized.match(fromToPattern);
 
   if (fromToMatch) {
@@ -380,11 +376,13 @@ export function extractCitiesForPipelines(text, pipelines) {
   // ============================================================================
   // PATTERN 2: "X to Y"
   // ============================================================================
-  const toPattern =
-  new RegExp(`\\b([a-z\\s]+?)\\s+${TO_WORD}[.\\s]+([a-z\\s]+?)(?:\\s|$|[^a-z])`, 'i');
+  const toPattern = new RegExp(
+  `\\b([^\\n\\r]+?)\\s+${TO_WORD}[.\\s]+([^\\n\\r]+?)(?:\\s|$)`,
+  'i'
+);
   const toMatch = normalized.match(toPattern);
 
-  if (toMatch && !normalized.includes('from')) {
+  if (toMatch && !/\bfrom\b/i.test(normalized)) {
     console.log(`🎯 Pattern: "X to Y"`);
     const source = toMatch[1].trim();
     const dest = toMatch[2].trim();
@@ -400,43 +398,68 @@ export function extractCitiesForPipelines(text, pipelines) {
       console.log(`✅ Final: ${foundCities.join(', ')}`);
       return foundCities;
     }
-  }
+    if (foundCities.length === 0 && toMatch) {
+  extractCitiesFromSegment(toMatch[1], citiesArray)
+    .forEach(c => {
+      if (!foundCities.includes(c)) foundCities.push(c);
+    });
+}
+  } 
 
   // ============================================================================
   // PATTERN 3: "pickup: X" OR "pick up: X"
   // ============================================================================
-  const pickupPattern = /\b(?:pickup|pick\s+up)\s*:?\s*([a-z\s]+?)(?:\s+drop\s*:?|\s+time\s*:?|\s+please|\s+contact|\s+\d|$)/i;
+  const pickupPattern =
+  /\b(?:pickup|pick\s+up)\s*:?\s*([^\n\r]+?)(?:\s+(?:drop|time|please|contact)\b|$)/i;
   const pickupMatch = normalized.match(pickupPattern);
 
   if (pickupMatch) {
-    console.log(`🎯 Pattern: "pickup: X"`);
-    const pickup = pickupMatch[1].trim();
-    extractCitiesFromSegment(pickup, citiesArray).forEach(c => {
-      if (!foundCities.includes(c)) foundCities.push(c);
-    });
+  console.log(`🎯 Pattern: "pickup: X"`);
+  const pickup = pickupMatch[1].trim();
+
+  extractCitiesFromSegment(pickup, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+
+  if (foundCities.length > 0) {
+    console.log(`✅ Final: ${foundCities.join(', ')}`);
+    return foundCities;
   }
+}
+
 
   // ============================================================================
   // PATTERN 4: "drop: Y"
   // ============================================================================
-  const dropPattern = /\bdrop\s*:?\s*([a-z\s]+?)(?:\s+time\s*:?|\s+please|\s+contact|\s+\d|$)/i;
+  const dropPattern =
+  /\bdrop\s*:?\s*([^\n\r]+?)(?:\s+(?:time|please|contact)\b|$)/i;
   const dropMatch = normalized.match(dropPattern);
 
   if (dropMatch) {
-    console.log(`🎯 Pattern: "drop: Y"`);
-    const drop = dropMatch[1].trim();
-    extractCitiesFromSegment(drop, citiesArray).forEach(c => {
-      if (!foundCities.includes(c)) foundCities.push(c);
-    });
+  console.log(`🎯 Pattern: "drop: Y"`);
+  const drop = dropMatch[1].trim();
+
+  extractCitiesFromSegment(drop, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+
+  if (foundCities.length > 0) {
+    console.log(`✅ Final: ${foundCities.join(', ')}`);
+    return foundCities;
   }
+}
+
 
   // ============================================================================
 // PATTERN 2B: "X se Y" (Hindi) ✅ NEW
 // ============================================================================
-const sePattern = /\b([a-z\s]+?)\s+se\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
+const sePattern = new RegExp(
+  `\\b([^\\n\\r]+?)\\s+se\\s+([^\\n\\r]+?)(?:\\s|$)`,
+  'i'
+);
 const seMatch = normalized.match(sePattern);
 
-if (seMatch && !normalized.includes('from') && !normalized.includes(' to ')) {
+if (seMatch && !/\bfrom\b/i.test(normalized) && !/\bto\b/i.test(normalized)) {
   console.log(`🎯 Pattern: "X se Y" (Hindi)`);
   const source = seMatch[1].trim();
   const dest = seMatch[2].trim();
@@ -511,7 +534,7 @@ export function getMessageFingerprint(text, messageId = null, timestamp = null) 
 
   const normalized = text
     .toLowerCase()
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
     .replace(/[^\w\s]/g, '')
     .replace(/\d{10,}/g, 'PHONE')
     .trim()
