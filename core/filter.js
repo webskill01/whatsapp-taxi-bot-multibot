@@ -5,9 +5,10 @@ import { matchCity } from './cityAliases.js';
 // ============================================================================
 
 const ROUTE_PATTERNS = [
-  /\bfrom\s+[a-z0-9\s]{3,40}\s+to\s+[a-z0-9\s]{3,40}/i,
-  /\bpickup\s+[a-z0-9\s]{3,40}\s+to\s+[a-z0-9\s]{3,40}/i,
-  /\b[a-z0-9\s]{3,40}\s+(?:to|tu|too|ton)\s+[a-z0-9\s]{3,40}/i,
+  /\bfrom\s+[a-z0-9\s]{2,50}\s+to\s+[a-z0-9\s]{2,50}/i,
+  /\bpickup\s+[a-z0-9\s]{2,50}\s+to\s+[a-z0-9\s]{2,50}/i,
+  /\b[a-z0-9\s]{2,50}\s+(?:to|tu|too|ton)\s+[a-z0-9\s]{2,50}/i,
+  /\b[a-z0-9\s]{2,30}\s*[-–]\s*[a-z0-9\s]{2,30}/i,
   /\bpickup\b/i,
   /\bdrop\b/i
 ];
@@ -18,11 +19,13 @@ const ROUTE_PATTERNS = [
 
 const NOISE_WORDS = [
   'need', 'required', 'sedan', 'ertiga', 'innova', 'dzire', 'aura', 
-  'car', 'taxi', 'current', 'today', 'tomorrow', 
+  'car', 'taxi', 'current', 'today', 'tomorrow', 'crunt',
   'w/c', 'wc', 'with', 'carrier', 'rate', 'price', 'time', 'morning',
   'evening', 'night', 'please', 'call', 'contact', 'available',
-  'crysta', 'tempo', 'traveller', 'bus', 'ac', 'non', 'good',
-  'neat', 'clean', 'one', 'way', 'round', 'trip', 'am', 'pm'
+  'crysta', 'tempo', 'traveller', 'ac', 'non', 'good', 
+  'neat', 'clean', 'one', 'way', 'round', 'trip', 'am', 'pm',
+  'travels', 'tour', 'tours', 'service', 'services', 'agency', 
+'transport', 'logistics', 'fleet', 'company'
 ];
 
 // ============================================================================
@@ -42,15 +45,16 @@ function normalizeText(text) {
     .replace(/[\u{2700}-\u{27BF}]/gu, "")
     .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, "")
+    .replace(/[ᗩ-ᗷᗪ-ᗴᗷ]/gu, 'e')      // ✅ NEW: Convert fancy unicode to 'e'
+    .replace(/[༒꧁꧂ɞʚ]/gu, '')         // ✅ NEW: Remove decorative symbols
     .replace(/[_\-:=*]/g, ' ')
     .replace(/\.(?=\s|$)/g, ' ')
     .replace(/\.(?=[a-z])/gi, ' ')
     .replace(/[ \t]+/g, " ")
-    .replace(/\b(\w+)(\s+\1)+\b/gi, '$1')  // Remove duplicate words
+    .replace(/\b(\w+)(\s+\1)+\b/gi, '$1')
     .trim()
     .toLowerCase();
 }
-
 // ============================================================================
 // PHONE NUMBER DETECTION
 // ============================================================================
@@ -141,7 +145,20 @@ function extractCitiesFromSegment(segment, citiesArray) {
   while (i < words.length) {
     let matched = false;
 
-    if (i <= words.length - 5) {
+    // ✅ NEW: Try 6-word combination (for "chandigarh 43 bus stand isbt 17")
+    if (i <= words.length - 6) {
+      const six = words.slice(i, i + 6).join(" ");
+      const city = matchCity(six, citiesArray);
+      if (city && !cities.includes(city)) {
+        console.log(`    ✅ 6-word: "${six}" → ${city}`);
+        cities.push(city);
+        i += 6;
+        matched = true;
+        continue;
+      }
+    }
+
+    if (!matched && i <= words.length - 5) {
       const five = words.slice(i, i + 5).join(" ");
       const city = matchCity(five, citiesArray);
       if (city && !cities.includes(city)) {
@@ -231,6 +248,8 @@ export function extractCitiesForPipelines(text, pipelines) {
 
   const normalized = normalizeText(text);
   const foundCities = [];
+  const CITY_CHARS = '[a-z0-9\u0900-\u097F\\s]';
+
 
   console.log(`🔍 DEBUG - Text: "${normalized}"`);
   console.log(`🔍 DEBUG - Target cities: [${citiesArray.join(', ')}]`);
@@ -265,44 +284,47 @@ export function extractCitiesForPipelines(text, pipelines) {
   }
 
   // ============================================================================
-  // PATTERN 2: "X to Y" (without "from") ✅ IMPROVED
-  // ============================================================================
-  const toPattern = new RegExp(
-    `\\b([a-z\\s]{2,})\\s+${TO_WORD}\\b\\s+([a-z\\s]+?)(?:\\s+(?:drop|time|current|need|taxi|car|rate|price|contact|call|today|tomorrow|morning|evening)|\\d{4,}|$)`,
-    'i'
-  );
-  const toMatch = normalized.match(toPattern);
+// PATTERN 2: "X to Y" (without "from") ✅ ENHANCED
+// ============================================================================
+const toPattern = new RegExp(
+  `\\b(${CITY_CHARS}{3,})\\s+${TO_WORD}\\b\\s+(${CITY_CHARS}+?)(?:\\s+(?:drop|time|crunt|current|need|taxi|car|rate|price|contact|call|today|tomorrow)|\\d{5,}|$)`,
+  'i'
+);
+const toMatch = normalized.match(toPattern);
 
-  if (toMatch && !/\bfrom\b/i.test(normalized)) {
-    console.log(`🎯 Pattern: "X to Y"`);
-    let source = toMatch[1].trim();
-    let dest = toMatch[2].trim();
-    
-    // Remove common prefixes
-    source = source.replace(/^(pick\s*)+/gi, '').trim();
-    source = source.replace(/^(need\s*)+/gi, '').trim();
-    
-    console.log(`  📍 Source: "${source}"`);
-    console.log(`  📍 Dest: "${dest}"`);
+if (toMatch && !/\bfrom\b/i.test(normalized)) {
+  console.log(`🎯 Pattern: "X to Y"`);
+  let source = toMatch[1].trim();
+  let dest = toMatch[2].trim();
+  
+  // Remove common prefixes
+  source = source.replace(/^(pick\s*)+/gi, '').trim();
+  source = source.replace(/^(need\s*)+/gi, '').trim();
+  
+  // Remove trailing numbers from source (like "43" in "chandigarh 43")
+  source = source.replace(/\s+\d+\s*$/g, '').trim();
+  
+  console.log(`  📍 Source: "${source}"`);
+  console.log(`  📍 Dest: "${dest}"`);
 
+  extractCitiesFromSegment(source, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+  extractCitiesFromSegment(dest, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+
+  if (foundCities.length > 0) {
+    console.log(`✅ FINAL: ${foundCities.join(', ')}`);
+    return foundCities;
+  }
+  
+  if (foundCities.length === 0 && source) {
     extractCitiesFromSegment(source, citiesArray).forEach(c => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
-    extractCitiesFromSegment(dest, citiesArray).forEach(c => {
-      if (!foundCities.includes(c)) foundCities.push(c);
-    });
-
-    if (foundCities.length > 0) {
-      console.log(`✅ FINAL: ${foundCities.join(', ')}`);
-      return foundCities;
-    }
-    
-    if (foundCities.length === 0 && source) {
-      extractCitiesFromSegment(source, citiesArray).forEach(c => {
-        if (!foundCities.includes(c)) foundCities.push(c);
-      });
-    }
   }
+}
 
   // ============================================================================
   // PATTERN 3: "pickup: X" OR "pick up: X"
@@ -351,8 +373,49 @@ export function extractCitiesForPipelines(text, pipelines) {
     });
   }
 
-  console.log(`✅ FINAL: ${foundCities.join(', ') || 'None'}`);
-  return foundCities;
+  // ============================================================================
+// HINDI ROUTE: "X se Y"
+// ============================================================================
+const sePattern = new RegExp(
+  `\\b(${CITY_CHARS}{3,})\\s+se\\s+(${CITY_CHARS}+?)(?:\\s+(?:time|rate|taxi|car|price|contact|call)|\\d{4,}|$)`,
+  'i'
+);
+
+const seMatch = normalized.match(sePattern);
+
+if (seMatch && !/\bto\b/i.test(normalized)) {
+  console.log(`🎯 Pattern: "X se Y" (Hindi)`);
+
+  const source = seMatch[1].trim();
+  const dest = seMatch[2].trim();
+
+  extractCitiesFromSegment(source, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+
+  extractCitiesFromSegment(dest, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+
+  if (foundCities.length > 0) {
+    return foundCities;
+  }
+}
+
+// ============================================================================
+// FALLBACK: Only if NO route intent words exist
+// ============================================================================
+const ROUTE_INTENT = /\b(from|to|pickup|drop|se|–|-)\b/i;
+
+if (foundCities.length === 0 && !ROUTE_INTENT.test(normalized)) {
+  extractCitiesFromSegment(normalized, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
+}
+
+
+console.log(`✅ FINAL: ${foundCities.join(', ') || 'None'}`);
+return foundCities;
 }
 
 // ============================================================================
@@ -372,8 +435,9 @@ export function matchesPipeline(extractedCities, cityScope) {
     return false;
   }
 
-  return extractedCities.some(city => 
-    cityScope.some(scopeCity => 
+  // ✅ PARTIAL MATCH ALLOWED
+  return extractedCities.some(city =>
+    cityScope.some(scopeCity =>
       scopeCity.toLowerCase() === city.toLowerCase()
     )
   );

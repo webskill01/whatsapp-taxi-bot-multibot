@@ -53,11 +53,14 @@ export const CITY_ALIASES = {
   "pgi": "Chandigarh",
   "pgimer": "Chandigarh",
   "pkl": "Chandigarh",
-  "sec 17": "Chandigarh",
-  "sec 35": "Chandigarh",
   "sector": "Chandigarh",
   "sector 17": "Chandigarh",
-  "sector 35": "Chandigarh",
+"sector 35": "Chandigarh",
+"43 bus stand": "Chandigarh",       // ✅ NEW
+"43 isbt": "Chandigarh",             // ✅ NEW
+"bus stand 43": "Chandigarh",        // ✅ NEW
+"chandigarh 43": "Chandigarh",       // ✅ NEW
+"panchkula": "Chandigarh",
 
   // Zirakpur
   "dera basi": "Zirakpur",
