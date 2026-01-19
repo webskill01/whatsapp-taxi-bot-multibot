@@ -26,15 +26,15 @@ const NOISE_WORDS = [
 ];
 
 // ============================================================================
-// TEXT NORMALIZATION
+// TEXT NORMALIZATION - ENHANCED
 // ============================================================================
 
 function normalizeText(text) {
   if (!text) return "";
 
   return text
-    .replace(/[\r\n]+/g, " ")
-    .replace(/[\u{1F600}-\u{1F64F}]/gu, "")
+    .replace(/[\r\n]+/g, " ")                          // Newlines → space
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, "")           // Remove emojis
     .replace(/[\u{1F300}-\u{1F5FF}]/gu, "")
     .replace(/[\u{1F680}-\u{1F6FF}]/gu, "")
     .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, "")
@@ -42,8 +42,10 @@ function normalizeText(text) {
     .replace(/[\u{2700}-\u{27BF}]/gu, "")
     .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, "")
-    .replace(/[_\-:=*]/g, ' ')
-    .replace(/[ \t]+/g, " ")
+    .replace(/[_\-:=*]/g, ' ')                         // Separators → space
+    .replace(/\.(?=\s|$)/g, ' ')                       // ✅ NEW: Dot at end or before space → space
+    .replace(/\.(?=[a-z])/gi, ' ')                     // ✅ NEW: Dot before letter → space
+    .replace(/[ \t]+/g, " ")                           // Multiple spaces → single space
     .trim()
     .toLowerCase();
 }
@@ -120,10 +122,12 @@ function extractCitiesFromSegment(segment, citiesArray) {
 
   if (!segment) return [];
 
-  // Clean segment
+  // Clean segment - ENHANCED
   let cleaned = segment
-    .replace(/[_\-:=*]/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[_\-:=*]/g, ' ')           // Separators → space
+    .replace(/\.(?=\s|$)/g, ' ')         // ✅ NEW: Dot at end or before space
+    .replace(/\.(?=[a-z])/gi, ' ')       // ✅ NEW: Dot before letter
+    .replace(/\s+/g, ' ')                // Multiple spaces → single
     .trim();
 
   // Remove noise words
@@ -343,6 +347,21 @@ export function extractCitiesForPipelines(text, pipelines) {
 
   console.log(`✅ FINAL: ${foundCities.join(', ') || 'None'}`);
   return foundCities;
+}
+
+// ============================================================================
+// PATTERN 5: "place: X" ✅ FIXED
+// ============================================================================
+const placePattern = /(?:place|location)\s*[:\-_=\.]*\s*([^\n\r]+?)(?:\s*(?:mobile|contact|call|rent|price|rate|phone)|\d{10}|$)/i;
+const placeMatch = normalized.match(placePattern);
+
+if (placeMatch) {
+  console.log(`🎯 Pattern: "place: X"`);  // ✅ FIXED: Using parenthesis, not backtick
+  const place = placeMatch[1].trim();
+
+  extractCitiesFromSegment(place, citiesArray).forEach(c => {
+    if (!foundCities.includes(c)) foundCities.push(c);
+  });
 }
 
 // ============================================================================

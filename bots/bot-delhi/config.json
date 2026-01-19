@@ -10,6 +10,13 @@
       "targetGroups": [
         "120363423723888340@g.us"
       ]
+    },
+    {
+      "name": "chandigarh-cluster",
+      "cityScope": ["Chandigarh", "Mohali", "Zirakpur"],
+      "targetGroups": [
+        "120363406438722163@g.us"
+      ]
     }
   ]
 }
