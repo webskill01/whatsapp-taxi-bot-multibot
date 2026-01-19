@@ -1,4 +1,4 @@
-import { matchCity } from './cityAliases.js';
+import { matchCity } from "./cityAliases.js";
 
 // ============================================================================
 // ROUTE DETECTION PATTERNS
@@ -10,7 +10,7 @@ const ROUTE_PATTERNS = [
   /\b[a-z0-9\s]{2,50}\s+(?:to|tu|too|ton)\s+[a-z0-9\s]{2,50}/i,
   /\b[a-z0-9\s]{2,30}\s*[-–]\s*[a-z0-9\s]{2,30}/i,
   /\bpickup\b/i,
-  /\bdrop\b/i
+  /\bdrop\b/i,
 ];
 
 // ============================================================================
@@ -18,14 +18,57 @@ const ROUTE_PATTERNS = [
 // ============================================================================
 
 const NOISE_WORDS = [
-  'need', 'required', 'sedan', 'ertiga', 'innova', 'dzire', 'aura', 
-  'car', 'taxi', 'current', 'today', 'tomorrow', 'crunt',
-  'w/c', 'wc', 'with', 'carrier', 'rate', 'price', 'time', 'morning',
-  'evening', 'night', 'please', 'call', 'contact', 'available',
-  'crysta', 'tempo', 'traveller', 'ac', 'non', 'good', 
-  'neat', 'clean', 'one', 'way', 'round', 'trip', 'am', 'pm',
-  'travels', 'tour', 'tours', 'service', 'services', 'agency', 
-'transport', 'logistics', 'fleet', 'company'
+  "need",
+  "required",
+  "sedan",
+  "ertiga",
+  "innova",
+  "dzire",
+  "aura",
+  "car",
+  "taxi",
+  "current",
+  "today",
+  "tomorrow",
+  "crunt",
+  "w/c",
+  "wc",
+  "with",
+  "carrier",
+  "rate",
+  "price",
+  "time",
+  "morning",
+  "evening",
+  "night",
+  "please",
+  "call",
+  "contact",
+  "available",
+  "crysta",
+  "tempo",
+  "traveller",
+  "ac",
+  "non",
+  "good",
+  "neat",
+  "clean",
+  "one",
+  "way",
+  "round",
+  "trip",
+  "am",
+  "pm",
+  "travels",
+  "tour",
+  "tours",
+  "service",
+  "services",
+  "agency",
+  "transport",
+  "logistics",
+  "fleet",
+  "company",
 ];
 
 // ============================================================================
@@ -45,13 +88,14 @@ function normalizeText(text) {
     .replace(/[\u{2700}-\u{27BF}]/gu, "")
     .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, "")
-    .replace(/[ᗩ-ᗷᗪ-ᗴᗷ]/gu, 'e')      // ✅ NEW: Convert fancy unicode to 'e'
-    .replace(/[༒꧁꧂ɞʚ]/gu, '')         // ✅ NEW: Remove decorative symbols
-    .replace(/[_\-:=*]/g, ' ')
-    .replace(/\.(?=\s|$)/g, ' ')
-    .replace(/\.(?=[a-z])/gi, ' ')
+    .replace(/[ᗩ-ᗷᗪ-ᗴᗷ]/gu, "e") // ✅ NEW: Convert fancy unicode to 'e'
+    .replace(/[༒꧁꧂ɞʚ]/gu, "") // ✅ NEW: Remove decorative symbols
+    .replace(/[_\-:=*]/g, " ")
+    .replace(/\.(?=\s|$)/g, " ")
+    .replace(/\.(?=[a-z])/gi, " ")
     .replace(/[ \t]+/g, " ")
-    .replace(/\b(\w+)(\s+\1)+\b/gi, '$1')
+    .replace(/\b(\w+)(\s+\1)+\b/gi, "$1")
+    .replace(/[()]/g, " ")
     .trim()
     .toLowerCase();
 }
@@ -79,10 +123,10 @@ export function hasPhoneNumber(text) {
     /\d{4}[-\s]\d{6}/,
     /\d{2}[-\s]\d{8}/,
     /\d{3}[-]\d{3}[-]\d{4}/,
-    /\b\d{10,12}\b/
+    /\b\d{10,12}\b/,
   ];
 
-  return phonePatterns.some(pattern => pattern.test(text));
+  return phonePatterns.some((pattern) => pattern.test(text));
 }
 
 // ============================================================================
@@ -124,18 +168,18 @@ function extractCitiesFromSegment(segment, citiesArray) {
   if (!segment) return [];
 
   let cleaned = segment
-    .replace(/[_\-:=*]/g, ' ')
-    .replace(/\.(?=\s|$)/g, ' ')
-    .replace(/\.(?=[a-z])/gi, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[_\-:=*]/g, " ")
+    .replace(/\.(?=\s|$)/g, " ")
+    .replace(/\.(?=[a-z])/gi, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
-  NOISE_WORDS.forEach(word => {
-    const regex = new RegExp(`\\b${word}\\b`, 'gi');
-    cleaned = cleaned.replace(regex, ' ');
+  NOISE_WORDS.forEach((word) => {
+    const regex = new RegExp(`\\b${word}\\b`, "gi");
+    cleaned = cleaned.replace(regex, " ");
   });
-  
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
   console.log(`  🧹 Cleaned: "${cleaned}"`);
 
   const words = cleaned.split(/\s+/);
@@ -231,9 +275,9 @@ export function extractCitiesForPipelines(text, pipelines) {
   }
 
   const allCities = new Set();
-  pipelines.forEach(pipeline => {
+  pipelines.forEach((pipeline) => {
     if (Array.isArray(pipeline.cityScope)) {
-      pipeline.cityScope.forEach(city => {
+      pipeline.cityScope.forEach((city) => {
         if (city !== "*") {
           allCities.add(city);
         }
@@ -248,20 +292,19 @@ export function extractCitiesForPipelines(text, pipelines) {
 
   const normalized = normalizeText(text);
   const foundCities = [];
-  const CITY_CHARS = '[a-z0-9\u0900-\u097F\\s]';
-
+  const CITY_CHARS = "[a-z0-9\u0900-\u097F\\s]";
 
   console.log(`🔍 DEBUG - Text: "${normalized}"`);
-  console.log(`🔍 DEBUG - Target cities: [${citiesArray.join(', ')}]`);
+  console.log(`🔍 DEBUG - Target cities: [${citiesArray.join(", ")}]`);
 
-  const TO_WORD = '(?:to|tu|too|ton)';  // ✅ FIXED: Removed 'se'
+  const TO_WORD = "(?:to|tu|too|ton)"; // ✅ FIXED: Removed 'se'
 
   // ============================================================================
   // PATTERN 1: "from X to Y"
   // ============================================================================
   const fromToPattern = new RegExp(
     `\\bfrom\\s+([a-z\\s]{2,})\\s+${TO_WORD}\\b\\s+([a-z\\s]+?)(?:\\s+(?:drop|time|current|need|taxi|car|rate|price|contact|call)|\\d{4,}|$)`,
-    'i'
+    "i",
   );
   const fromToMatch = normalized.match(fromToPattern);
 
@@ -270,74 +313,74 @@ export function extractCitiesForPipelines(text, pipelines) {
     const source = fromToMatch[1].trim();
     const dest = fromToMatch[2].trim();
 
-    extractCitiesFromSegment(source, citiesArray).forEach(c => {
+    extractCitiesFromSegment(source, citiesArray).forEach((c) => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
-    extractCitiesFromSegment(dest, citiesArray).forEach(c => {
+    extractCitiesFromSegment(dest, citiesArray).forEach((c) => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
 
     if (foundCities.length > 0) {
-      console.log(`✅ FINAL: ${foundCities.join(', ')}`);
+      console.log(`✅ FINAL: ${foundCities.join(", ")}`);
       return foundCities;
     }
   }
 
   // ============================================================================
-// PATTERN 2: "X to Y" (without "from") ✅ ENHANCED
-// ============================================================================
-const toPattern = new RegExp(
-  `\\b(${CITY_CHARS}{3,})\\s+${TO_WORD}\\b\\s+(${CITY_CHARS}+?)(?:\\s+(?:drop|time|crunt|current|need|taxi|car|rate|price|contact|call|today|tomorrow)|\\d{5,}|$)`,
-  'i'
-);
-const toMatch = normalized.match(toPattern);
+  // PATTERN 2: "X to Y" (without "from") ✅ ENHANCED
+  // ============================================================================
+  const toPattern = new RegExp(
+    `\\b(${CITY_CHARS}{3,})\\s+${TO_WORD}\\b\\s+(${CITY_CHARS}+?)(?:\\s+(?:drop|time|crunt|current|need|taxi|car|rate|price|contact|call|today|tomorrow)|\\d{5,}|$)`,
+    "i",
+  );
+  const toMatch = normalized.match(toPattern);
 
-if (toMatch && !/\bfrom\b/i.test(normalized)) {
-  console.log(`🎯 Pattern: "X to Y"`);
-  let source = toMatch[1].trim();
-  let dest = toMatch[2].trim();
-  
-  // Remove common prefixes
-  source = source.replace(/^(pick\s*)+/gi, '').trim();
-  source = source.replace(/^(need\s*)+/gi, '').trim();
-  
-  // Remove trailing numbers from source (like "43" in "chandigarh 43")
-  source = source.replace(/\s+\d+\s*$/g, '').trim();
-  
-  console.log(`  📍 Source: "${source}"`);
-  console.log(`  📍 Dest: "${dest}"`);
+  if (toMatch && !/\bfrom\b/i.test(normalized)) {
+    console.log(`🎯 Pattern: "X to Y"`);
+    let source = toMatch[1].trim();
+    let dest = toMatch[2].trim();
 
-  extractCitiesFromSegment(source, citiesArray).forEach(c => {
-    if (!foundCities.includes(c)) foundCities.push(c);
-  });
-  extractCitiesFromSegment(dest, citiesArray).forEach(c => {
-    if (!foundCities.includes(c)) foundCities.push(c);
-  });
+    // Remove common prefixes
+    source = source.replace(/^(pick\s*)+/gi, "").trim();
+    source = source.replace(/^(need\s*)+/gi, "").trim();
 
-  if (foundCities.length > 0) {
-    console.log(`✅ FINAL: ${foundCities.join(', ')}`);
-    return foundCities;
-  }
-  
-  if (foundCities.length === 0 && source) {
-    extractCitiesFromSegment(source, citiesArray).forEach(c => {
+    // Remove trailing numbers from source (like "43" in "chandigarh 43")
+    source = source.replace(/\s+\d+\s*$/g, "").trim();
+
+    console.log(`  📍 Source: "${source}"`);
+    console.log(`  📍 Dest: "${dest}"`);
+
+    extractCitiesFromSegment(source, citiesArray).forEach((c) => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
+    extractCitiesFromSegment(dest, citiesArray).forEach((c) => {
+      if (!foundCities.includes(c)) foundCities.push(c);
+    });
+
+    if (foundCities.length > 0) {
+      console.log(`✅ FINAL: ${foundCities.join(", ")}`);
+      return foundCities;
+    }
+
+    if (foundCities.length === 0 && source) {
+      extractCitiesFromSegment(source, citiesArray).forEach((c) => {
+        if (!foundCities.includes(c)) foundCities.push(c);
+      });
+    }
   }
-}
 
   // ============================================================================
   // PATTERN 3: "pickup: X" OR "pick up: X"
   // ============================================================================
   const pickupPattern =
-  /(?:pickup|pick\s*up|🏘️\s*pickup)\s*[:\-_=]*\s*([^\n\r]+?)(?=\s+(?:to|se|drop|🛣️|time|⏳)|\d{10}|$)/i;
+    /(?:pickup|pick\s*up|🏘️\s*pickup)\s*[:\-_=]*\s*([^\n\r]+?)(?=\s+(?:to|se|drop|🛣️|time|⏳)|\d{10}|$)/i;
   const pickupMatch = normalized.match(pickupPattern);
 
   if (pickupMatch) {
     console.log(`🎯 Pattern: "pickup: X"`);
     const pickup = pickupMatch[1].trim();
 
-    extractCitiesFromSegment(pickup, citiesArray).forEach(c => {
+    extractCitiesFromSegment(pickup, citiesArray).forEach((c) => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
   }
@@ -347,13 +390,22 @@ if (toMatch && !/\bfrom\b/i.test(normalized)) {
   // ============================================================================
   const dropPattern =
     /(?:drop|🛣️\s*drop)\s*[:\-_=]*\s*([^\n\r]+?)(?:\s*(?:taxi|🚕|time|⏳|trip|🛄|rate|current|please|contact|call|mob)|\d{10}|$)/i;
-  const dropMatch = normalized.match(dropPattern);
+
+  const dropMatch =
+    !/\b(?:[a-z\u0900-\u097F]{2,}\s+(to|se)\s+[a-z\u0900-\u097F]{2,})\b/i.test(
+      normalized,
+    )
+      ? normalized.match(dropPattern)
+      : null;
+  if (!dropMatch && /\bdrop\b/i.test(normalized)) {
+    console.log("ℹ️ drop skipped due to route keyword");
+  }
 
   if (dropMatch) {
     console.log(`🎯 Pattern: "drop: Y"`);
     const drop = dropMatch[1].trim();
 
-    extractCitiesFromSegment(drop, citiesArray).forEach(c => {
+    extractCitiesFromSegment(drop, citiesArray).forEach((c) => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
   }
@@ -361,61 +413,61 @@ if (toMatch && !/\bfrom\b/i.test(normalized)) {
   // ============================================================================
   // PATTERN 5: "place: X"
   // ============================================================================
-  const placePattern = /(?:place|location)\s*[:\-_=\.]*\s*([^\n\r]+?)(?:\s*(?:mobile|contact|call|rent|price|rate|phone)|\d{10}|$)/i;
+  const placePattern =
+    /(?:place|location)\s*[:\-_=\.]*\s*([^\n\r]+?)(?:\s*(?:mobile|contact|call|rent|price|rate|phone)|\d{10}|$)/i;
   const placeMatch = normalized.match(placePattern);
 
   if (placeMatch) {
     console.log(`🎯 Pattern: "place: X"`);
     const place = placeMatch[1].trim();
 
-    extractCitiesFromSegment(place, citiesArray).forEach(c => {
+    extractCitiesFromSegment(place, citiesArray).forEach((c) => {
       if (!foundCities.includes(c)) foundCities.push(c);
     });
   }
 
   // ============================================================================
-// HINDI ROUTE: "X se Y"
-// ============================================================================
-const sePattern = new RegExp(
-  `\\b(${CITY_CHARS}{3,})\\s+se\\s+(${CITY_CHARS}+?)(?:\\s+(?:time|rate|taxi|car|price|contact|call)|\\d{4,}|$)`,
-  'i'
-);
+  // HINDI ROUTE: "X se Y"
+  // ============================================================================
+  const sePattern = new RegExp(
+    `\\b(${CITY_CHARS}{3,})\\s+se\\s+(${CITY_CHARS}+?)(?:\\s+(?:time|rate|taxi|car|price|contact|call)|\\d{4,}|$)`,
+    "i",
+  );
 
-const seMatch = normalized.match(sePattern);
+  const seMatch = normalized.match(sePattern);
 
-if (seMatch && !/\bto\b/i.test(normalized)) {
-  console.log(`🎯 Pattern: "X se Y" (Hindi)`);
+  if (seMatch && !/\bto\b/i.test(normalized)) {
+    console.log(`🎯 Pattern: "X se Y" (Hindi)`);
 
-  const source = seMatch[1].trim();
-  const dest = seMatch[2].trim();
+    const source = seMatch[1].trim();
+    const dest = seMatch[2].trim();
 
-  extractCitiesFromSegment(source, citiesArray).forEach(c => {
-    if (!foundCities.includes(c)) foundCities.push(c);
-  });
+    extractCitiesFromSegment(source, citiesArray).forEach((c) => {
+      if (!foundCities.includes(c)) foundCities.push(c);
+    });
 
-  extractCitiesFromSegment(dest, citiesArray).forEach(c => {
-    if (!foundCities.includes(c)) foundCities.push(c);
-  });
+    extractCitiesFromSegment(dest, citiesArray).forEach((c) => {
+      if (!foundCities.includes(c)) foundCities.push(c);
+    });
 
-  if (foundCities.length > 0) {
-    return foundCities;
+    if (foundCities.length > 0) {
+      return foundCities;
+    }
   }
-}
 
-// ============================================================================
-// FALLBACK: Only if NO route intent words exist
-// ============================================================================
-const ROUTE_INTENT = /\b(from|to|pickup|drop|se|–|-)\b/i;
+  // ============================================================================
+  // FALLBACK: Only if NO route intent words exist
+  // ============================================================================
+  const ROUTE_INTENT = /\b(from|to|pickup|drop|se|–|-)\b/i;
 
-if (foundCities.length === 0 && !ROUTE_INTENT.test(normalized)) {
-  extractCitiesFromSegment(normalized, citiesArray).forEach(c => {
-    if (!foundCities.includes(c)) foundCities.push(c);
-  });
-}
+  if (foundCities.length === 0 && !ROUTE_INTENT.test(normalized)) {
+    extractCitiesFromSegment(normalized, citiesArray).forEach((c) => {
+      if (!foundCities.includes(c)) foundCities.push(c);
+    });
+  }
 
-
-console.log(`✅ FINAL: ${foundCities.join(', ') || 'None'}`);
-return foundCities;
+  console.log(`✅ FINAL: ${foundCities.join(", ") || "None"}`);
+  return foundCities;
 }
 
 // ============================================================================
@@ -436,10 +488,10 @@ export function matchesPipeline(extractedCities, cityScope) {
   }
 
   // ✅ PARTIAL MATCH ALLOWED
-  return extractedCities.some(city =>
-    cityScope.some(scopeCity =>
-      scopeCity.toLowerCase() === city.toLowerCase()
-    )
+  return extractedCities.some((city) =>
+    cityScope.some(
+      (scopeCity) => scopeCity.toLowerCase() === city.toLowerCase(),
+    ),
   );
 }
 
@@ -479,21 +531,25 @@ export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
 // MESSAGE FINGERPRINTING
 // ============================================================================
 
-export function getMessageFingerprint(text, messageId = null, timestamp = null) {
+export function getMessageFingerprint(
+  text,
+  messageId = null,
+  timestamp = null,
+) {
   if (!text) return "";
 
   const normalized = text
     .toLowerCase()
-    .replace(/[ \t]+/g, ' ')
-    .replace(/[^\w\s]/g, '')
-    .replace(/\d{10,}/g, 'PHONE')
+    .replace(/[ \t]+/g, " ")
+    .replace(/[^\w\s]/g, "")
+    .replace(/\d{10,}/g, "PHONE")
     .trim()
     .substring(0, 300);
 
   let hash = 0;
   for (let i = 0; i < normalized.length; i++) {
     const char = normalized.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
 
