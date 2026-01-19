@@ -27,9 +27,6 @@ export const CITY_ALIASES = {
   "ambl": "Ambala",
 
   // Patiala
-  "bathinda": "Patiala",
-  "kotakpura": "Patiala",
-  "malerkotla": "Patiala",
   "nabha": "Patiala",
   "patiala": "Patiala",
   "patiyala": "Patiala",
@@ -53,14 +50,12 @@ export const CITY_ALIASES = {
   "pgi": "Chandigarh",
   "pgimer": "Chandigarh",
   "pkl": "Chandigarh",
-  "sector": "Chandigarh",
   "sector 17": "Chandigarh",
 "sector 35": "Chandigarh",
 "43 bus stand": "Chandigarh",       // ✅ NEW
 "43 isbt": "Chandigarh",             // ✅ NEW
 "bus stand 43": "Chandigarh",        // ✅ NEW
-"chandigarh 43": "Chandigarh",       // ✅ NEW
-"panchkula": "Chandigarh",
+"chandigarh 43": "Chandigarh", 
 
   // Zirakpur
   "dera basi": "Zirakpur",
@@ -353,6 +348,16 @@ export const CITY_ALIASES = {
 
   // Hisar
   "hisar": "Hisar",
+  // Bathinda
+"bathinda": "Bathinda",
+"bti": "Bathinda",
+
+// Malerkotla
+"malerkotla": "Malerkotla",
+
+// Kotkapura
+"kotakpura": "Kotkapura",
+
 
   // Jaipur
   "jaipur": "Jaipur",

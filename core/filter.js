@@ -330,7 +330,7 @@ if (toMatch && !/\bfrom\b/i.test(normalized)) {
   // PATTERN 3: "pickup: X" OR "pick up: X"
   // ============================================================================
   const pickupPattern =
-    /(?:pickup|pick\s*up|🏘️\s*pickup)\s*[:\-_=]*\s*([^\n\r]+?)(?:\s*(?:drop|🛣️|time|⏳|taxi|🚕|trip|rate|current|please|contact|call|mob)|\d{10}|$)/i;
+  /(?:pickup|pick\s*up|🏘️\s*pickup)\s*[:\-_=]*\s*([^\n\r]+?)(?=\s+(?:to|se|drop|🛣️|time|⏳)|\d{10}|$)/i;
   const pickupMatch = normalized.match(pickupPattern);
 
   if (pickupMatch) {
