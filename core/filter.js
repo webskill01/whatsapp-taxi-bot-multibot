@@ -18,11 +18,11 @@ const ROUTE_PATTERNS = [
 
 const NOISE_WORDS = [
   'need', 'required', 'sedan', 'ertiga', 'innova', 'dzire', 'aura', 
-  'car', 'taxi', 'drop', 'pickup', 'current', 'today', 'tomorrow', 
+  'car', 'taxi', 'current', 'today', 'tomorrow', 
   'w/c', 'wc', 'with', 'carrier', 'rate', 'price', 'time', 'morning',
   'evening', 'night', 'please', 'call', 'contact', 'available',
   'crysta', 'tempo', 'traveller', 'bus', 'ac', 'non', 'good',
-  'neat', 'clean', 'one', 'way', 'round', 'trip'
+  'neat', 'clean', 'one', 'way', 'round', 'trip', 'am', 'pm'
 ];
 
 // ============================================================================
@@ -46,6 +46,7 @@ function normalizeText(text) {
     .replace(/\.(?=\s|$)/g, ' ')
     .replace(/\.(?=[a-z])/gi, ' ')
     .replace(/[ \t]+/g, " ")
+    .replace(/\b(\w+)(\s+\1)+\b/gi, '$1')  // Remove duplicate words
     .trim()
     .toLowerCase();
 }
@@ -234,13 +235,13 @@ export function extractCitiesForPipelines(text, pipelines) {
   console.log(`🔍 DEBUG - Text: "${normalized}"`);
   console.log(`🔍 DEBUG - Target cities: [${citiesArray.join(', ')}]`);
 
-  const TO_WORD = '(?:to|tu|too|ton|se)';
+  const TO_WORD = '(?:to|tu|too|ton)';  // ✅ FIXED: Removed 'se'
 
   // ============================================================================
   // PATTERN 1: "from X to Y"
   // ============================================================================
   const fromToPattern = new RegExp(
-    `\\bfrom\\s+([^\\n\\r]+?)\\s+${TO_WORD}[.\\s]*([^\\n\\r]+?)(?:\\s+(?:drop|time|current|need|taxi|car|rate|price|contact|call)|\\d{10}|$)`,
+    `\\bfrom\\s+([a-z\\s]{2,})\\s+${TO_WORD}\\b\\s+([a-z\\s]+?)(?:\\s+(?:drop|time|current|need|taxi|car|rate|price|contact|call)|\\d{4,}|$)`,
     'i'
   );
   const fromToMatch = normalized.match(fromToPattern);
@@ -264,18 +265,25 @@ export function extractCitiesForPipelines(text, pipelines) {
   }
 
   // ============================================================================
-  // PATTERN 2: "X to Y" (without "from")
+  // PATTERN 2: "X to Y" (without "from") ✅ IMPROVED
   // ============================================================================
   const toPattern = new RegExp(
-    `\\b([^\\n\\r]+?)\\s+${TO_WORD}[.\\s]*([^\\n\\r]+?)(?:\\s+(?:drop|time|current|need|taxi|car|rate|price|contact|call|today|tomorrow|morning|evening|am|pm)|\\d{10}|$)`,
+    `\\b([a-z\\s]{2,})\\s+${TO_WORD}\\b\\s+([a-z\\s]+?)(?:\\s+(?:drop|time|current|need|taxi|car|rate|price|contact|call|today|tomorrow|morning|evening)|\\d{4,}|$)`,
     'i'
   );
   const toMatch = normalized.match(toPattern);
 
   if (toMatch && !/\bfrom\b/i.test(normalized)) {
     console.log(`🎯 Pattern: "X to Y"`);
-    const source = toMatch[1].trim();
-    const dest = toMatch[2].trim();
+    let source = toMatch[1].trim();
+    let dest = toMatch[2].trim();
+    
+    // Remove common prefixes
+    source = source.replace(/^(pick\s*)+/gi, '').trim();
+    source = source.replace(/^(need\s*)+/gi, '').trim();
+    
+    console.log(`  📍 Source: "${source}"`);
+    console.log(`  📍 Dest: "${dest}"`);
 
     extractCitiesFromSegment(source, citiesArray).forEach(c => {
       if (!foundCities.includes(c)) foundCities.push(c);
@@ -329,7 +337,7 @@ export function extractCitiesForPipelines(text, pipelines) {
   }
 
   // ============================================================================
-  // PATTERN 5: "place: X" ✅ MOVED INSIDE FUNCTION
+  // PATTERN 5: "place: X"
   // ============================================================================
   const placePattern = /(?:place|location)\s*[:\-_=\.]*\s*([^\n\r]+?)(?:\s*(?:mobile|contact|call|rent|price|rate|phone)|\d{10}|$)/i;
   const placeMatch = normalized.match(placePattern);
