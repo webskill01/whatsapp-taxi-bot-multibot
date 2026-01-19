@@ -33,8 +33,8 @@ function normalizeText(text) {
   if (!text) return "";
 
   return text
-    .replace(/[\r\n]+/g, " ")                          // Newlines → space
-    .replace(/[\u{1F600}-\u{1F64F}]/gu, "")           // Remove emojis
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, "")
     .replace(/[\u{1F300}-\u{1F5FF}]/gu, "")
     .replace(/[\u{1F680}-\u{1F6FF}]/gu, "")
     .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, "")
@@ -42,10 +42,10 @@ function normalizeText(text) {
     .replace(/[\u{2700}-\u{27BF}]/gu, "")
     .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, "")
-    .replace(/[_\-:=*]/g, ' ')                         // Separators → space
-    .replace(/\.(?=\s|$)/g, ' ')                       // ✅ NEW: Dot at end or before space → space
-    .replace(/\.(?=[a-z])/gi, ' ')                     // ✅ NEW: Dot before letter → space
-    .replace(/[ \t]+/g, " ")                           // Multiple spaces → single space
+    .replace(/[_\-:=*]/g, ' ')
+    .replace(/\.(?=\s|$)/g, ' ')
+    .replace(/\.(?=[a-z])/gi, ' ')
+    .replace(/[ \t]+/g, " ")
     .trim()
     .toLowerCase();
 }
@@ -113,24 +113,18 @@ export function containsBlockedNumber(text, blockedNumbers) {
 // CITY EXTRACTION - CORE LOGIC
 // ============================================================================
 
-/**
- * Extract cities from a text segment
- * Tries 5, 4, 3, 2, 1 word combinations in that order
- */
 function extractCitiesFromSegment(segment, citiesArray) {
   console.log(`  📍 Segment: "${segment}"`);
 
   if (!segment) return [];
 
-  // Clean segment - ENHANCED
   let cleaned = segment
-    .replace(/[_\-:=*]/g, ' ')           // Separators → space
-    .replace(/\.(?=\s|$)/g, ' ')         // ✅ NEW: Dot at end or before space
-    .replace(/\.(?=[a-z])/gi, ' ')       // ✅ NEW: Dot before letter
-    .replace(/\s+/g, ' ')                // Multiple spaces → single
+    .replace(/[_\-:=*]/g, ' ')
+    .replace(/\.(?=\s|$)/g, ' ')
+    .replace(/\.(?=[a-z])/gi, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 
-  // Remove noise words
   NOISE_WORDS.forEach(word => {
     const regex = new RegExp(`\\b${word}\\b`, 'gi');
     cleaned = cleaned.replace(regex, ' ');
@@ -146,7 +140,6 @@ function extractCitiesFromSegment(segment, citiesArray) {
   while (i < words.length) {
     let matched = false;
 
-    // Try 5-word combination
     if (i <= words.length - 5) {
       const five = words.slice(i, i + 5).join(" ");
       const city = matchCity(five, citiesArray);
@@ -159,7 +152,6 @@ function extractCitiesFromSegment(segment, citiesArray) {
       }
     }
 
-    // Try 4-word combination
     if (!matched && i <= words.length - 4) {
       const four = words.slice(i, i + 4).join(" ");
       const city = matchCity(four, citiesArray);
@@ -172,7 +164,6 @@ function extractCitiesFromSegment(segment, citiesArray) {
       }
     }
 
-    // Try 3-word combination
     if (!matched && i <= words.length - 3) {
       const three = words.slice(i, i + 3).join(" ");
       const city = matchCity(three, citiesArray);
@@ -185,7 +176,6 @@ function extractCitiesFromSegment(segment, citiesArray) {
       }
     }
 
-    // Try 2-word combination
     if (!matched && i <= words.length - 2) {
       const two = words.slice(i, i + 2).join(" ");
       const city = matchCity(two, citiesArray);
@@ -198,7 +188,6 @@ function extractCitiesFromSegment(segment, citiesArray) {
       }
     }
 
-    // Try 1-word
     if (!matched) {
       const one = words[i];
       const city = matchCity(one, citiesArray);
@@ -218,16 +207,11 @@ function extractCitiesFromSegment(segment, citiesArray) {
 // MAIN CITY EXTRACTION FUNCTION
 // ============================================================================
 
-/**
- * Extract cities for pipeline routing
- * Tries multiple patterns: "from X to Y", "X to Y", "pickup: X", "drop: Y"
- */
 export function extractCitiesForPipelines(text, pipelines) {
   if (!text || !pipelines || !Array.isArray(pipelines)) {
     return [];
   }
 
-  // Build list of all configured cities from pipelines
   const allCities = new Set();
   pipelines.forEach(pipeline => {
     if (Array.isArray(pipeline.cityScope)) {
@@ -305,7 +289,6 @@ export function extractCitiesForPipelines(text, pipelines) {
       return foundCities;
     }
     
-    // Fallback: Extract from source only
     if (foundCities.length === 0 && source) {
       extractCitiesFromSegment(source, citiesArray).forEach(c => {
         if (!foundCities.includes(c)) foundCities.push(c);
@@ -345,23 +328,23 @@ export function extractCitiesForPipelines(text, pipelines) {
     });
   }
 
+  // ============================================================================
+  // PATTERN 5: "place: X" ✅ MOVED INSIDE FUNCTION
+  // ============================================================================
+  const placePattern = /(?:place|location)\s*[:\-_=\.]*\s*([^\n\r]+?)(?:\s*(?:mobile|contact|call|rent|price|rate|phone)|\d{10}|$)/i;
+  const placeMatch = normalized.match(placePattern);
+
+  if (placeMatch) {
+    console.log(`🎯 Pattern: "place: X"`);
+    const place = placeMatch[1].trim();
+
+    extractCitiesFromSegment(place, citiesArray).forEach(c => {
+      if (!foundCities.includes(c)) foundCities.push(c);
+    });
+  }
+
   console.log(`✅ FINAL: ${foundCities.join(', ') || 'None'}`);
   return foundCities;
-}
-
-// ============================================================================
-// PATTERN 5: "place: X" ✅ FIXED
-// ============================================================================
-const placePattern = /(?:place|location)\s*[:\-_=\.]*\s*([^\n\r]+?)(?:\s*(?:mobile|contact|call|rent|price|rate|phone)|\d{10}|$)/i;
-const placeMatch = normalized.match(placePattern);
-
-if (placeMatch) {
-  console.log(`🎯 Pattern: "place: X"`);  // ✅ FIXED: Using parenthesis, not backtick
-  const place = placeMatch[1].trim();
-
-  extractCitiesFromSegment(place, citiesArray).forEach(c => {
-    if (!foundCities.includes(c)) foundCities.push(c);
-  });
 }
 
 // ============================================================================
