@@ -79,6 +79,7 @@ export const GLOBAL_CONFIG = {
     "ਖਾਲੀ",
     "ਖੜੀ",
     "empty",
+    "cabcircle",
     "taxiwale"
   ].map(k => k.toLowerCase()),
 
@@ -228,6 +229,9 @@ export const GLOBAL_CONFIG = {
   "9913818592",
   "9913918592",
   "9914577606",
+  "7526823870",
+  "7494979167",
+  "6280262188",
   "9970680118"
 ]
 ,
