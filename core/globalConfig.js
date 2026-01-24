@@ -237,8 +237,8 @@ export const GLOBAL_CONFIG = {
 ,
 
   rateLimits: {
-    hourly: 80,
-    daily: 700
+    hourly: 100,
+    daily: 1000
   },
 
   validation: {
