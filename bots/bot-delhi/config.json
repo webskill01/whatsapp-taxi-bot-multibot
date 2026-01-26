@@ -8,7 +8,6 @@
       "name": "delhi-ncr-cluster",
       "cityScope": ["Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
       "targetGroups": [
-        "120363423723888340@g.us",
         "120363405984520359@g.us"
       ]
     },
