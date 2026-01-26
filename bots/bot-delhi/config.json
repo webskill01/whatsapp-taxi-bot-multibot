@@ -1,6 +1,9 @@
 {
   "sourceGroupIds": [
-    "120363422627467141@g.us",
+    "120363423042952422@g.us",
+    "120363419755566863@g.us",
+    "120363074588429278@g.us",
+    "120363405883964543@g.us",
     "120363419472843883@g.us"
   ],
   "pipelines": [
@@ -8,7 +11,8 @@
       "name": "delhi-ncr-cluster",
       "cityScope": ["Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
       "targetGroups": [
-        "120363405984520359@g.us"
+        "120363405984520359@g.us",
+        "120363423723888340@g.us"
       ]
     },
     {
