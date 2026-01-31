@@ -11,8 +11,7 @@
       "name": "delhi-ncr-cluster",
       "cityScope": ["Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
       "targetGroups": [
-        "120363405984520359@g.us",
-        "120363423723888340@g.us"
+        "120363405984520359@g.us"
       ]
     },
     {
@@ -20,6 +19,14 @@
       "cityScope": ["Chandigarh", "Mohali", "Zirakpur"],
       "targetGroups": [
         "120363406438722163@g.us"
+      ]
+    },
+    {
+      "name": "all-mix",
+      "cityScope": ["*"],
+      "targetGroups": [
+        "120363424287416053@g.us",
+        "120363423723888340@g.us"
       ]
     }
   ]
