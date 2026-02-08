@@ -11,12 +11,12 @@
  *   - Per-group send cooldown
  */
 
-import { extractPickupCity } from './cityAliases.js';
 import { 
   isTaxiRequest, 
   hasPhoneNumber, 
   containsBlockedNumber,
-  getMessageFingerprint 
+  getMessageFingerprint,
+  extractPickupCity  // ← FIXED: This is in filter.js
 } from './filter.js';
 
 // ============================================================================
