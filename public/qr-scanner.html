@@ -54,6 +54,17 @@
       font-size: 0.9em;
     }
 
+    .hardening-badge {
+      display: inline-block;
+      background: #d4edda;
+      color: #155724;
+      padding: 4px 8px;
+      border-radius: 5px;
+      font-size: 0.7em;
+      margin-top: 5px;
+      font-weight: 600;
+    }
+
     .status {
       padding: 15px 25px;
       border-radius: 10px;
@@ -192,6 +203,15 @@
     .hidden {
       display: none;
     }
+
+    .warning-text {
+      background: #fff3cd;
+      color: #856404;
+      padding: 10px;
+      border-radius: 8px;
+      margin-top: 15px;
+      font-size: 0.9em;
+    }
   </style>
 </head>
 <body>
@@ -201,6 +221,7 @@
       <div class="bot-info">
         <h1 id="bot-name">Loading...</h1>
         <div class="port" id="bot-port">Port: ----</div>
+        <div class="hardening-badge">🛡️ PROTECTED</div>
       </div>
     </div>
 
@@ -220,6 +241,10 @@
         <li>Tap <strong>Link a Device</strong></li>
         <li>Point your phone at this screen to scan the QR code</li>
       </ol>
+      
+      <div class="warning-text" id="warning-text" style="display: none;">
+        ⚠️ QR code expires every 20 seconds. Auto-refreshing...
+      </div>
     </div>
 
     <div class="timer" id="timer">
@@ -233,7 +258,8 @@
   </div>
 
   <script>
-    const HOST = window.location.hostname;
+    // ✅ Use dynamic hostname (already correct in original)
+    const HOST = window.location.hostname || 'localhost';
     const urlParams = new URLSearchParams(window.location.search);
     const BOT_PORT = urlParams.get('port') || '3001';
     const API_URL = `http://${HOST}:${BOT_PORT}`;
@@ -241,12 +267,14 @@
     let intervalId;
     let countdownId;
     let countdown = 5;
+    let consecutiveFailures = 0;
 
     function getBotIcon(name) {
       const icons = {
         'delhi': '🏛️', 'mumbai': '🌊', 'bangalore': '💻',
         'chennai': '🏖️', 'kolkata': '🎭', 'hyderabad': '💎',
-        'pune': '🏰', 'ahmedabad': '🕌', 'jaipur': '🐘'
+        'pune': '🏰', 'ahmedabad': '🕌', 'jaipur': '🐘',
+        'kanav': '👨‍💼', 'punjab': '🌾', 'tricity': '🏙️'
       };
       const nameLower = (name || '').toLowerCase();
       for (const [key, icon] of Object.entries(icons)) {
@@ -257,12 +285,18 @@
 
     async function checkStatus() {
       try {
-        const res = await fetch(`${API_URL}/status`);
+        const res = await fetch(`${API_URL}/status`, {
+          signal: AbortSignal.timeout(5000) // 5s timeout
+        });
         const data = await res.json();
+        
+        // ✅ Reset failure counter on success
+        consecutiveFailures = 0;
         
         const statusDiv = document.getElementById('status');
         const qrImage = document.getElementById('qr-image');
         const instructions = document.getElementById('instructions');
+        const warningText = document.getElementById('warning-text');
         
         // Update bot info
         if (data.botName) {
@@ -281,7 +315,7 @@
           clearInterval(countdownId);
           
           setTimeout(() => {
-            if (confirm('✅ Bot connected successfully!\n\nReturn to dashboard?')) {
+            if (confirm('✅ Bot connected successfully!\n\n🛡️ Anti-ban protection is now active.\n\nReturn to dashboard?')) {
               window.location.href = '/';
             }
           }, 2000);
@@ -289,17 +323,29 @@
           statusDiv.className = 'status waiting';
           statusDiv.textContent = '📱 Scan this QR code with WhatsApp';
           instructions.classList.remove('hidden');
+          warningText.style.display = 'block';
           loadQR();
         } else {
           statusDiv.className = 'status waiting';
           statusDiv.textContent = '⏳ Waiting for QR code...';
           qrImage.classList.add('hidden');
+          warningText.style.display = 'none';
         }
       } catch (err) {
         console.error('Status check failed:', err);
+        consecutiveFailures++;
+        
         const statusDiv = document.getElementById('status');
         statusDiv.className = 'status error';
-        statusDiv.textContent = '❌ Cannot connect to bot. Is it running?';
+        
+        if (consecutiveFailures >= 3) {
+          statusDiv.textContent = `❌ Bot offline or unreachable (${consecutiveFailures} attempts)`;
+          document.getElementById('warning-text').textContent = 
+            '⚠️ Check if bot is running: pm2 status';
+          document.getElementById('warning-text').style.display = 'block';
+        } else {
+          statusDiv.textContent = '⏳ Connecting to bot...';
+        }
       }
     }
 
@@ -320,6 +366,7 @@
       img.onerror = () => {
         img.classList.add('hidden');
         refreshIndicator.classList.remove('active');
+        console.warn('QR image failed to load');
       };
       
       img.src = newSrc;
@@ -329,6 +376,7 @@
     function manualRefresh() {
       loadQR();
       checkStatus();
+      countdown = 5;
     }
 
     function updateCountdown() {
@@ -337,11 +385,16 @@
       if (countdown < 0) countdown = 5;
     }
 
+    // Initial check
     checkStatus();
+    
+    // Auto-refresh every 5 seconds
     intervalId = setInterval(() => {
       checkStatus();
       countdown = 5;
     }, 5000);
+    
+    // Update countdown every second
     countdownId = setInterval(updateCountdown, 1000);
   </script>
 </body>

@@ -1,3 +1,11 @@
+/**
+ * ============================================================================
+ * CONFIG LOADER
+ * ============================================================================
+ * Loads and validates per-bot config + merges with global config
+ * Preserved OLD bot's multi-pipeline architecture
+ */
+
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
@@ -26,7 +34,7 @@ export function loadConfig(botDir) {
     process.exit(1);
   }
 
-  // ✅ Validate required fields (bot-specific only)
+  // Validate required fields (bot-specific only)
   const requiredFields = [
     'sourceGroupIds',
     'pipelines'
@@ -75,7 +83,7 @@ export function loadConfig(botDir) {
     }
   });
 
-  // ✅ MERGE with global config
+  // Merge with global config
   const mergedConfig = {
     ...config,
     botDir: botDir,
@@ -85,7 +93,9 @@ export function loadConfig(botDir) {
     rateLimits: GLOBAL_CONFIG.rateLimits,
     validation: GLOBAL_CONFIG.validation,
     humanBehavior: GLOBAL_CONFIG.humanBehavior,
-    circuitBreaker: GLOBAL_CONFIG.circuitBreaker
+    circuitBreaker: GLOBAL_CONFIG.circuitBreaker,
+    deduplication: GLOBAL_CONFIG.deduplication,
+    reconnect: GLOBAL_CONFIG.reconnect
   };
 
   // Validate group ID formats

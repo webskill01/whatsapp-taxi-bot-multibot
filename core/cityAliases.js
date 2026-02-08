@@ -2,18 +2,7 @@
  * ============================================================================
  * CITY ALIASES DATABASE
  * ============================================================================
- * 
- * This file contains comprehensive city name mappings for taxi routing.
- * Each alias maps to a canonical city name used in pipeline configurations.
- * 
- * Structure: "alias": "CanonicalCityName"
- * 
- * Guidelines:
- * - Include ALL common misspellings
- * - Include abbreviations (e.g., "ggn" → "Gurgaon")
- * - Include landmarks (e.g., "t3" → "Delhi")
- * - Include local names (e.g., "pink city" → "Jaipur")
- * - Keep canonical names in Title Case
+ * Preserved from OLD bot - comprehensive city name mappings
  */
 
 export const CITY_ALIASES = {
@@ -51,11 +40,11 @@ export const CITY_ALIASES = {
   "pgimer": "Chandigarh",
   "pkl": "Chandigarh",
   "sector 17": "Chandigarh",
-"sector 35": "Chandigarh",
-"43 bus stand": "Chandigarh",       // ✅ NEW
-"43 isbt": "Chandigarh",             // ✅ NEW
-"bus stand 43": "Chandigarh",        // ✅ NEW
-"chandigarh 43": "Chandigarh", 
+  "sector 35": "Chandigarh",
+  "43 bus stand": "Chandigarh",
+  "43 isbt": "Chandigarh",
+  "bus stand 43": "Chandigarh",
+  "chandigarh 43": "Chandigarh",
 
   // Zirakpur
   "dera basi": "Zirakpur",
@@ -348,16 +337,16 @@ export const CITY_ALIASES = {
 
   // Hisar
   "hisar": "Hisar",
+
   // Bathinda
-"bathinda": "Bathinda",
-"bti": "Bathinda",
+  "bathinda": "Bathinda",
+  "bti": "Bathinda",
 
-// Malerkotla
-"malerkotla": "Malerkotla",
+  // Malerkotla
+  "malerkotla": "Malerkotla",
 
-// Kotkapura
-"kotakpura": "Kotkapura",
-
+  // Kotkapura
+  "kotakpura": "Kotkapura",
 
   // Jaipur
   "jaipur": "Jaipur",
@@ -390,41 +379,21 @@ export const CITY_ALIASES = {
   "udaipur": "Udaipur"
 };
 
-/**
- * Get canonical city name from alias
- * @param {string} alias - City name or alias (case-insensitive)
- * @returns {string|null} - Canonical city name or null if not found
- */
 export function getCanonicalCityName(alias) {
   if (!alias) return null;
-  
   const normalized = alias.toLowerCase().trim();
   return CITY_ALIASES[normalized] || null;
 }
 
-/**
- * Check if a word/phrase is a valid city
- * @param {string} word - Word or phrase to check
- * @param {Array<string>} configuredCities - List of cities from pipeline config
- * @returns {string|null} - Canonical city name if found and configured, null otherwise
- */
 export function matchCity(word, configuredCities) {
   if (!word || !configuredCities) return null;
-  
   const canonical = getCanonicalCityName(word);
-  
   if (canonical && configuredCities.includes(canonical)) {
     return canonical;
   }
-  
   return null;
 }
 
-/**
- * Get all aliases for a canonical city name
- * @param {string} canonicalName - Canonical city name
- * @returns {Array<string>} - List of all aliases
- */
 export function getAliasesForCity(canonicalName) {
   return Object.entries(CITY_ALIASES)
     .filter(([alias, canonical]) => canonical === canonicalName)

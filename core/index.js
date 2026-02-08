@@ -1,3 +1,16 @@
+/**
+ * ============================================================================
+ * BAILEYS CONNECTION & MESSAGE HANDLER
+ * ============================================================================
+ * Merged: OLD bot's QR server + NEW bot's anti-ban hardening
+ * 
+ * 🔒 Anti-ban features:
+ *   B1: Reconnect age-gate (10s strict for 30s after reconnect)
+ *   B2: Replay ID set (200 rolling message IDs)
+ *   C2: Disk-backed fingerprint persistence (debounced 30s writes)
+ *   A4: Settling delay (5-15s on first message after connect)
+ */
+
 import makeWASocket, { 
   DisconnectReason, 
   useMultiFileAuthState,
@@ -9,46 +22,265 @@ import express from 'express';
 import qrcode from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import pino from 'pino';
+import fs from 'fs';
+import path from 'path';
 
-import { log } from './logger.js';
-import { routeMessage, getRouterStats } from './router.js';
+import { routeMessage, getRouterStats, initializeRouter } from './router.js';
 
 // ============================================================================
 // GLOBAL STATE
 // ============================================================================
 
 let sock = null;
-let currentQR = null; // ✅ Store QR string instead of file path
+let currentQR = null;
 let isConnected = false;
 let botConfig = null;
+let log = null;
+
+// 🔒 B1: Reconnect age-gate (ported from new core)
+let reconnectStrictUntil = 0;
+const STRICT_AGE_MS = 10000;          // 10s
+const STRICT_WINDOW_DURATION = 30000; // 30s
+
+// 🔒 B2: Replay ID set (ported from new core)
+const replayIdSet = new Set();
+const MAX_REPLAY_IDS = 200;
+
+// 🔒 A4: Settling delay flag (ported from new core)
+let needsSettlingDelay = true;
+
+// 🔒 C2: Disk persistence state (ported from new core)
+let fingerprintDirty = false;
+let fingerprintSaveTimer = null;
+const fingerprintSet = new Set();
+
+// Stats
+const stats = {
+  messagesReceived: 0,
+  rejected: {
+    fromMe: 0,
+    oldAfterReconnect: 0,
+    replayDuplicate: 0,
+    tooShort: 0,
+    duplicate: 0
+  }
+};
+
+// ============================================================================
+// 🔒 C2: DISK-BACKED FINGERPRINT PERSISTENCE (ported from new core)
+// ============================================================================
+
+/**
+ * Loads fingerprints from disk with TTL filtering
+ */
+function loadFingerprintsFromDisk(botDir) {
+  const fpFile = path.join(botDir, botConfig.deduplication.fingerprintFile);
+  
+  if (!fs.existsSync(fpFile)) {
+    log.info('📂 No existing fingerprint file found');
+    return;
+  }
+
+  try {
+    const content = fs.readFileSync(fpFile, 'utf8');
+    const entries = JSON.parse(content);
+    
+    if (!Array.isArray(entries)) {
+      log.warn('⚠️  Invalid fingerprint file format');
+      return;
+    }
+
+    const now = Date.now();
+    const ttl = botConfig.deduplication.fingerprintTTL;
+    let loaded = 0;
+
+    for (const entry of entries) {
+      if (entry.fp && entry.ts) {
+        const age = now - entry.ts;
+        if (age < ttl) {
+          fingerprintSet.add(entry.fp);
+          loaded++;
+        }
+      }
+    }
+
+    log.info(`📥 Loaded ${loaded} fingerprints from disk (${entries.length - loaded} expired)`);
+  } catch (error) {
+    log.error(`❌ Failed to load fingerprints: ${error.message}`);
+  }
+}
+
+/**
+ * Marks fingerprints as dirty (triggers debounced save)
+ */
+function markDirty() {
+  fingerprintDirty = true;
+
+  // Clear existing timer
+  if (fingerprintSaveTimer) {
+    clearTimeout(fingerprintSaveTimer);
+  }
+
+  // Debounced save
+  fingerprintSaveTimer = setTimeout(() => {
+    saveFingerprintsToDisk();
+  }, botConfig.deduplication.saveDebounceMs);
+}
+
+/**
+ * Saves fingerprints to disk
+ */
+function saveFingerprintsToDisk() {
+  if (!fingerprintDirty) return;
+
+  const fpFile = path.join(botConfig.botDir, botConfig.deduplication.fingerprintFile);
+
+  try {
+    const now = Date.now();
+    const entries = [];
+    
+    // Convert Set to array with timestamps
+    for (const fp of fingerprintSet) {
+      entries.push({ fp, ts: now });
+      
+      // Cap at max save size
+      if (entries.length >= botConfig.deduplication.fingerprintSaveCap) {
+        break;
+      }
+    }
+
+    fs.writeFileSync(fpFile, JSON.stringify(entries, null, 2), 'utf8');
+    log.info(`💾 Saved ${entries.length} fingerprints to disk`);
+    
+    fingerprintDirty = false;
+  } catch (error) {
+    log.error(`❌ Failed to save fingerprints: ${error.message}`);
+  }
+}
+
+/**
+ * Force save on shutdown
+ */
+function forceSaveFingerprints() {
+  if (fingerprintSaveTimer) {
+    clearTimeout(fingerprintSaveTimer);
+  }
+  saveFingerprintsToDisk();
+}
+
+// ============================================================================
+// MESSAGE HANDLER WITH ANTI-BAN HARDENING
+// ============================================================================
+
+/**
+ * 🔒 Core message handler with all anti-ban gates
+ */
+async function handleMessage(message) {
+  stats.messagesReceived++;
+
+  try {
+    const messageKey = message.key;
+    const messageContent = message.message;
+    const messageTimestamp = (message.messageTimestamp || 0) * 1000;
+    const now = Date.now();
+
+    // Gate 1: fromMe check
+    if (messageKey.fromMe) {
+      stats.rejected.fromMe++;
+      return;
+    }
+
+    // 🔒 B1: Reconnect age-gate (strict window enforcement)
+    if (reconnectStrictUntil && now < reconnectStrictUntil) {
+      const messageAge = now - messageTimestamp;
+      if (messageAge > STRICT_AGE_MS) {
+        stats.rejected.oldAfterReconnect++;
+        log.info(`🕐 Rejected old message (${Math.floor(messageAge / 1000)}s old, strict window active)`);
+        return;
+      }
+    }
+
+    // 🔒 B2: Replay ID deduplication
+    const messageId = messageKey.id;
+    if (replayIdSet.has(messageId)) {
+      stats.rejected.replayDuplicate++;
+      log.info(`🔁 Rejected replay duplicate: ${messageId}`);
+      return;
+    }
+    
+    // Add to replay set with size limit
+    replayIdSet.add(messageId);
+    if (replayIdSet.size > MAX_REPLAY_IDS) {
+      const oldest = replayIdSet.values().next().value;
+      replayIdSet.delete(oldest);
+    }
+
+    // Extract text
+    let messageText = '';
+    if (messageContent?.conversation) {
+      messageText = messageContent.conversation;
+    } else if (messageContent?.extendedTextMessage?.text) {
+      messageText = messageContent.extendedTextMessage.text;
+    }
+
+    // Gate 2: Minimum length
+    if (!messageText || messageText.length < botConfig.validation.minMessageLength) {
+      stats.rejected.tooShort++;
+      return;
+    }
+
+    // 🔒 A4: Settling delay on first message after connect
+    if (needsSettlingDelay) {
+      const settlingMs = botConfig.reconnect.settlingMin + 
+        Math.random() * (botConfig.reconnect.settlingMax - botConfig.reconnect.settlingMin);
+      
+      log.info(`⏳ Settling delay: ${Math.floor(settlingMs / 1000)}s`);
+      await new Promise(resolve => setTimeout(resolve, settlingMs));
+      
+      needsSettlingDelay = false;
+    }
+
+    // Pass to router for processing
+    await routeMessage(sock, message, botConfig);
+
+  } catch (error) {
+    log.error(`❌ Message handler error: ${error.message}`);
+  }
+}
 
 // ============================================================================
 // BAILEYS CONNECTION
 // ============================================================================
 
-export async function connectToWhatsApp(botDir, config, ENV) {
+export async function connectToWhatsApp(botDir, config, ENV, logger) {
   botConfig = config;
+  log = logger || console;
   
   const { state, saveCreds } = await useMultiFileAuthState(ENV.AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
-  const logger = pino({ level: 'silent' });
+  const pinoLogger = pino({ level: 'silent' });
 
   sock = makeWASocket({
     version,
-    logger,
+    logger: pinoLogger,
     printQRInTerminal: false,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger),
+      keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
     },
     markOnlineOnConnect: false,
   });
 
-  // ✅ QR CODE HANDLING
+  // 🔒 C2: Load fingerprints from disk on startup
+  loadFingerprintsFromDisk(botDir);
+
+  // Initialize router
+  initializeRouter(config, log);
+
+  // QR CODE HANDLING
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // 1. Generate and show QR
     if (qr) {
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📱 SCAN THIS QR CODE:');
@@ -56,7 +288,6 @@ export async function connectToWhatsApp(botDir, config, ENV) {
       qrcode.generate(qr, { small: true });
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-      // 2. Store QR string for API (no file saving)
       currentQR = qr;
       log.info(`🔄 QR code refreshed`);
       log.info(`🌐 QR available at: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
@@ -72,30 +303,37 @@ export async function connectToWhatsApp(botDir, config, ENV) {
 
       if (shouldReconnect) {
         isConnected = false;
-        currentQR = null; // ✅ Clear QR on disconnect
+        currentQR = null;
+        
+        // 🔒 C2: Force save fingerprints before reconnect
+        forceSaveFingerprints();
+        
         setTimeout(() => {
-          connectToWhatsApp(botDir, config, ENV);
+          connectToWhatsApp(botDir, config, ENV, log);
         }, 3000);
       }
     } else if (connection === 'open') {
       log.info('✅ WhatsApp Connected!');
       isConnected = true;
-      currentQR = null; // ✅ Clear QR after successful connection
+      currentQR = null;
+      
+      // 🔒 B1: Activate strict age window
+      reconnectStrictUntil = Date.now() + STRICT_WINDOW_DURATION;
+      log.info(`🔒 Strict age window active for ${STRICT_WINDOW_DURATION / 1000}s`);
+      
+      // 🔒 A4: Reset settling delay flag
+      needsSettlingDelay = true;
     }
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ✅ Handle incoming messages using router
+  // Handle incoming messages
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
     for (const message of messages) {
-      try {
-        await routeMessage(sock, message, botConfig);
-      } catch (error) {
-        log.error(`❌ Route error: ${error.message}`);
-      }
+      await handleMessage(message);
     }
   });
 
@@ -106,13 +344,14 @@ export async function connectToWhatsApp(botDir, config, ENV) {
 // QR SERVER (HTTP ENDPOINT)
 // ============================================================================
 
-export function startQRServer(ENV, config) {
+export function startQRServer(ENV, config, logger) {
+  log = logger || console;
+  
   const app = express();
   app.use(express.static('public'));
   
-  // ✅ Serve QR via HTTP as PNG image
+  // Serve QR via HTTP as PNG image
   app.get('/qr', async (req, res) => {
-    // Check if already connected
     if (isConnected) {
       return res.status(200).json({ 
         success: true,
@@ -121,7 +360,6 @@ export function startQRServer(ENV, config) {
       });
     }
 
-    // Check if QR exists
     if (!currentQR) {
       return res.status(404).json({ 
         error: 'No QR code available',
@@ -131,14 +369,12 @@ export function startQRServer(ENV, config) {
     }
 
     try {
-      // ✅ Generate QR as PNG buffer in memory (no file saving)
       const qrBuffer = await QRCode.toBuffer(currentQR, {
         type: 'png',
         width: 400,
         margin: 2
       });
 
-      // Send as image
       res.setHeader('Content-Type', 'image/png');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
@@ -153,7 +389,7 @@ export function startQRServer(ENV, config) {
     }
   });
 
-  // ✅ Get QR as base64 (alternative endpoint)
+  // Get QR as base64
   app.get('/qr/base64', async (req, res) => {
     if (isConnected) {
       return res.json({ 
@@ -197,7 +433,11 @@ export function startQRServer(ENV, config) {
       connected: isConnected,
       qrAvailable: currentQR !== null,
       botName: ENV.BOT_NAME,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      stats: {
+        messagesReceived: stats.messagesReceived,
+        rejected: stats.rejected
+      }
     });
   });
 
@@ -208,6 +448,25 @@ export function startQRServer(ENV, config) {
       botName: ENV.BOT_NAME,
       connected: isConnected,
       ...routerStats,
+      messageHandler: {
+        received: stats.messagesReceived,
+        rejected: stats.rejected
+      },
+      antiBan: {
+        reconnectProtection: {
+          strictWindowActive: Date.now() < reconnectStrictUntil,
+          strictAgeMs: STRICT_AGE_MS,
+          strictWindowDuration: STRICT_WINDOW_DURATION
+        },
+        replayProtection: {
+          cachedIds: replayIdSet.size,
+          maxIds: MAX_REPLAY_IDS
+        },
+        fingerprintPersistence: {
+          inMemory: fingerprintSet.size,
+          dirty: fingerprintDirty
+        }
+      },
       config: {
         sourceGroups: config.sourceGroupIds.length,
         pipelines: config.pipelines.length,
@@ -236,17 +495,15 @@ export function startQRServer(ENV, config) {
         participantsCount: g.participants.length
       }));
 
-      // ✅ Categorize groups with proper sorting
+      // Categorize groups
       const categorized = groups.map(g => {
         let type = 'other';
         let category = 'Unmonitored';
 
-        // Check if source group
         if (config.sourceGroupIds.includes(g.id)) {
           type = 'source';
           category = 'Source Group';
         } else {
-          // Check if in any pipeline
           for (const pipeline of config.pipelines) {
             if (pipeline.targetGroups.includes(g.id)) {
               type = 'pipeline';
@@ -259,7 +516,7 @@ export function startQRServer(ENV, config) {
         return { ...g, type, category };
       });
 
-      // ✅ Sort by type priority
+      // Sort by type priority
       const sortOrder = { source: 1, pipeline: 2, other: 3 };
       categorized.sort((a, b) => {
         const orderA = sortOrder[a.type] || 99;
@@ -267,7 +524,6 @@ export function startQRServer(ENV, config) {
         if (orderA !== orderB) {
           return orderA - orderB;
         }
-        // Sort by name within same type
         return (a.name || '').localeCompare(b.name || '');
       });
 
@@ -339,6 +595,22 @@ export function startQRServer(ENV, config) {
 
 process.on('SIGINT', () => {
   log.info('👋 Shutting down...');
+  
+  // 🔒 C2: Force save fingerprints
+  forceSaveFingerprints();
+  
+  if (sock) {
+    sock.end();
+  }
+  
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  log.info('📥 Received SIGTERM');
+  
+  // 🔒 C2: Force save fingerprints
+  forceSaveFingerprints();
   
   if (sock) {
     sock.end();
