@@ -9,6 +9,10 @@
  *   B2: Replay ID set (200 rolling message IDs)
  *   C2: Disk-backed fingerprint persistence (debounced 30s writes)
  *   A4: Settling delay (5-15s on first message after connect)
+ * 
+ * 🛡️ Session stability features:
+ *   S1: Session stabilization delay (8s after connect before sends)
+ *   S2: Reconnect rate limiter (max 3 per 10 minutes)
  */
 
 import makeWASocket, { 
@@ -54,6 +58,15 @@ let fingerprintDirty = false;
 let fingerprintSaveTimer = null;
 const fingerprintSet = new Set();
 
+// 🛡️ S1: Session stabilization (prevents prekey thrashing)
+let sessionStableAt = 0;
+const SESSION_STABILIZE_MS = 8000; // 8 seconds
+
+// 🛡️ S2: Reconnect rate limiter (prevents WhatsApp prekey spam)
+let reconnects = [];
+const MAX_RECONNECTS = 3;
+const RECONNECT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
 // Stats
 const stats = {
   messagesReceived: 0,
@@ -62,9 +75,57 @@ const stats = {
     oldAfterReconnect: 0,
     replayDuplicate: 0,
     tooShort: 0,
-    duplicate: 0
+    duplicate: 0,
+    sessionNotStable: 0
   }
 };
+
+// ============================================================================
+// 🛡️ S2: RECONNECT RATE LIMITER
+// ============================================================================
+
+/**
+ * Checks if reconnect is allowed (max 3 per 10 minutes)
+ * WHY: Prevents WhatsApp from spamming prekeys during reconnect storms
+ */
+function canReconnect() {
+  const now = Date.now();
+  
+  // Remove reconnects older than 10 minutes
+  reconnects = reconnects.filter(t => now - t < RECONNECT_WINDOW_MS);
+  
+  if (reconnects.length >= MAX_RECONNECTS) {
+    const oldestReconnect = Math.min(...reconnects);
+    const waitTimeMs = RECONNECT_WINDOW_MS - (now - oldestReconnect);
+    const waitMinutes = Math.ceil(waitTimeMs / 60000);
+    
+    log.warn(`⚠️  Reconnect rate limit hit (${reconnects.length}/${MAX_RECONNECTS})`);
+    log.warn(`⏳ Must wait ${waitMinutes} minutes before reconnecting`);
+    
+    return false;
+  }
+  
+  // Record this reconnect attempt
+  reconnects.push(now);
+  return true;
+}
+
+/**
+ * Sleeps before reconnect if rate limited
+ */
+async function sleepIfRateLimited() {
+  const now = Date.now();
+  reconnects = reconnects.filter(t => now - t < RECONNECT_WINDOW_MS);
+  
+  if (reconnects.length >= MAX_RECONNECTS) {
+    const oldestReconnect = Math.min(...reconnects);
+    const waitTimeMs = RECONNECT_WINDOW_MS - (now - oldestReconnect);
+    const waitMinutes = Math.ceil(waitTimeMs / 60000);
+    
+    log.warn(`🛑 Reconnect rate limited - sleeping ${waitMinutes} minutes`);
+    await new Promise(resolve => setTimeout(resolve, waitTimeMs));
+  }
+}
 
 // ============================================================================
 // 🔒 C2: DISK-BACKED FINGERPRINT PERSISTENCE (ported from new core)
@@ -190,6 +251,14 @@ async function handleMessage(message) {
       return;
     }
 
+    // 🛡️ S1: Session stability check (prevents prekey thrashing)
+    // WHY: Sending immediately after connect can trigger prekey errors
+    if (now < sessionStableAt) {
+      stats.rejected.sessionNotStable++;
+      log.warn(`🛑 Session not stable yet — skipping message (${Math.ceil((sessionStableAt - now) / 1000)}s remaining)`);
+      return;
+    }
+
     // 🔒 B1: Reconnect age-gate (strict window enforcement)
     if (reconnectStrictUntil && now < reconnectStrictUntil) {
       const messageAge = now - messageTimestamp;
@@ -256,6 +325,11 @@ export async function connectToWhatsApp(botDir, config, ENV, logger) {
   botConfig = config;
   log = logger || console;
   
+  // 🛡️ S2: Check reconnect rate limit
+  if (!canReconnect()) {
+    await sleepIfRateLimited();
+  }
+  
   const { state, saveCreds } = await useMultiFileAuthState(ENV.AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
   const pinoLogger = pino({ level: 'silent' });
@@ -316,6 +390,11 @@ export async function connectToWhatsApp(botDir, config, ENV, logger) {
       log.info('✅ WhatsApp Connected!');
       isConnected = true;
       currentQR = null;
+      
+      // 🛡️ S1: Activate session stabilization delay
+      // WHY: Prevents prekey thrashing by waiting 8s before any sends
+      sessionStableAt = Date.now() + SESSION_STABILIZE_MS;
+      log.info(`🧠 Signal session stabilizing for ${SESSION_STABILIZE_MS / 1000}s`);
       
       // 🔒 B1: Activate strict age window
       reconnectStrictUntil = Date.now() + STRICT_WINDOW_DURATION;
@@ -465,6 +544,16 @@ export function startQRServer(ENV, config, logger) {
         fingerprintPersistence: {
           inMemory: fingerprintSet.size,
           dirty: fingerprintDirty
+        },
+        sessionStability: {
+          sessionStable: Date.now() >= sessionStableAt,
+          stabilizeMs: SESSION_STABILIZE_MS,
+          remainingMs: Math.max(0, sessionStableAt - Date.now())
+        },
+        reconnectRateLimit: {
+          reconnectsInWindow: reconnects.length,
+          maxReconnects: MAX_RECONNECTS,
+          windowMs: RECONNECT_WINDOW_MS
         }
       },
       config: {
