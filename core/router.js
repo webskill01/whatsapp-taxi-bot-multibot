@@ -16,7 +16,7 @@ import {
   hasPhoneNumber, 
   containsBlockedNumber,
   getMessageFingerprint,
-  extractPickupCity  // ← FIXED: This is in filter.js
+  extractPickupCity
 } from './filter.js';
 
 // ============================================================================
@@ -66,11 +66,9 @@ export function initializeRouter(botConfig, logger) {
   config = botConfig;
   log = logger || console;
   
-  log.info('✅ Router initialized with multi-pipeline support');
-  log.info(`   Pipelines: ${config.pipelines.length}`);
-  config.pipelines.forEach(p => {
-    log.info(`   → ${p.name}: cities [${p.cityScope.join(', ')}], targets: ${p.targetGroups.length}`);
-  });
+  log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  log.info('🚀 ROUTER INITIALIZED');
+  log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 }
 
 // ============================================================================
@@ -139,12 +137,14 @@ function checkRateLimits() {
 
   // Reset hourly counter
   if (now > hourlyResetTime) {
+    log.info(`♻️  HOURLY RESET: ${messageCountHourly} messages sent in last hour`);
     messageCountHourly = 0;
     hourlyResetTime = now + 3600000;
   }
 
   // Reset daily counter
   if (now > dailyResetTime) {
+    log.info(`♻️  DAILY RESET: ${messageCountDaily} messages sent in last 24 hours`);
     messageCountDaily = 0;
     dailyResetTime = now + 86400000;
   }
@@ -177,7 +177,9 @@ function checkCircuitBreaker() {
     // Reset circuit breaker
     circuitBreakerOpen = false;
     circuitBreakerFailures = 0;
-    log.info('🔓 Circuit breaker reset');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info('🔓 CIRCUIT BREAKER RESET');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 
   return { open: false };
@@ -189,7 +191,14 @@ function recordCircuitBreakerFailure() {
   if (circuitBreakerFailures >= config.circuitBreaker.maxFailures) {
     circuitBreakerOpen = true;
     circuitBreakerResetTime = Date.now() + config.circuitBreaker.breakDuration;
-    log.warn(`🔒 Circuit breaker OPEN (${circuitBreakerFailures} failures)`);
+    
+    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.error('🔒 CIRCUIT BREAKER TRIGGERED');
+    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.error(`   ❌ Consecutive failures: ${circuitBreakerFailures}`);
+    log.error(`   ⏳ Cooldown period: ${config.circuitBreaker.breakDuration / 1000}s`);
+    log.error(`   🔓 Auto-reset at: ${new Date(circuitBreakerResetTime).toLocaleTimeString()}`);
+    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 }
 
@@ -220,7 +229,13 @@ function cleanupFingerprintSetIfNeeded() {
       fingerprintSet.delete(oldest);
     }
     
-    log.info(`🧹 Fingerprint cleanup: ${toDelete} removed, now ${fingerprintSet.size}/${maxSize}`);
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info('🧹 FINGERPRINT CLEANUP');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info(`   🗑️  Removed: ${toDelete} old entries`);
+    log.info(`   📊 Current size: ${fingerprintSet.size}/${maxSize}`);
+    log.info(`   ✅ Memory optimized`);
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 }
 
@@ -297,21 +312,29 @@ function matchPipelines(city) {
 /**
  * Sends message to a single target group with cooldown check
  */
-async function sendToGroup(sock, targetGroupId, messageText) {
+async function sendToGroup(sock, targetGroupId, messageText, groupIndex, totalGroups) {
   // Check send cooldown
   if (!checkSendCooldown(targetGroupId)) {
-    log.warn(`⏱️  Skipping ${targetGroupId.substring(0, 15)}... (cooldown active)`);
+    log.warn(`   ${groupIndex}/${totalGroups}. ⏱️  ${targetGroupId.substring(0, 18)}... (cooldown active, skipped)`);
     return { success: true, skipped: true };
   }
+
+  const sendStartTime = Date.now();
 
   try {
     await sock.sendMessage(targetGroupId, { text: messageText });
     recordSendTime(targetGroupId);
-    log.info(`✅ Sent to ${targetGroupId.substring(0, 15)}...`);
+    
+    const sendDuration = Date.now() - sendStartTime;
+    log.info(`   ${groupIndex}/${totalGroups}. ✅ ${targetGroupId.substring(0, 18)}... (${(sendDuration / 1000).toFixed(2)}s)`);
+    
     resetCircuitBreakerFailures();
     return { success: true };
   } catch (error) {
-    log.error(`❌ Send failed to ${targetGroupId.substring(0, 15)}...: ${error.message}`);
+    const sendDuration = Date.now() - sendStartTime;
+    log.error(`   ${groupIndex}/${totalGroups}. ❌ ${targetGroupId.substring(0, 18)}... FAILED (${(sendDuration / 1000).toFixed(2)}s)`);
+    log.error(`      Error: ${error.message}`);
+    
     recordCircuitBreakerFailure();
     return { success: false, error: error.message };
   }
@@ -321,42 +344,68 @@ async function sendToGroup(sock, targetGroupId, messageText) {
  * 🔒 A1, A5, A3: Enhanced send loop with timing and shuffling (ported from new core)
  * Sends to all targets with human-like delays and RANDOM order
  */
-async function sendToTargets(sock, targetGroups, messageText) {
+async function sendToTargets(sock, targetGroups, messageText, pipelineName) {
   if (!targetGroups || targetGroups.length === 0) return;
+
+  const sendStartTime = Date.now();
 
   // 🔒 A3: Shuffle targets for RANDOM send order
   const shuffledTargets = shuffleArray(targetGroups);
+  
+  log.info(`   🔀 Shuffled order: ${shuffledTargets.length} targets (random sequence)`);
 
   // 🔒 A1: Typing delay before first send (length-scaled)
   const typingDelay = getTypingDelay(messageText.length);
-  log.info(`⌨️  Typing simulation: ${typingDelay}ms`);
+  log.info(`   ⌨️  Typing simulation: ${(typingDelay / 1000).toFixed(1)}s (${messageText.length} chars)`);
   await new Promise(resolve => setTimeout(resolve, typingDelay));
+
+  log.info(`   📤 Sending to ${shuffledTargets.length} group(s)...`);
+
+  let successCount = 0;
+  let skippedCount = 0;
 
   // Send to all targets sequentially with human delays
   for (let i = 0; i < shuffledTargets.length; i++) {
     const targetGroupId = shuffledTargets[i];
+    const groupIndex = i + 1;
 
     // Send message
-    const result = await sendToGroup(sock, targetGroupId, messageText);
+    const result = await sendToGroup(sock, targetGroupId, messageText, groupIndex, shuffledTargets.length);
 
-    if (!result.success) {
+    if (result.success) {
+      if (result.skipped) {
+        skippedCount++;
+      } else {
+        successCount++;
+      }
+    } else {
       stats.errors++;
     }
 
     // 🔒 A5: Weighted delay between groups (except after last send)
     if (i < shuffledTargets.length - 1) {
-      const betweenDelay = getWeightedDelay();
-      
-      // Random pause chance
+      // Random pause chance (15%)
       if (shouldApplyRandomPause()) {
         const pauseDuration = getRandomPauseDuration();
-        log.info(`⏸️  Random pause: ${pauseDuration}ms`);
+        log.info(`   ⏸️  Random pause: ${(pauseDuration / 1000).toFixed(1)}s (natural variance)`);
         await new Promise(resolve => setTimeout(resolve, pauseDuration));
       }
       
+      const betweenDelay = getWeightedDelay();
+      log.info(`   ⏳ Gap: ${(betweenDelay / 1000).toFixed(2)}s`);
       await new Promise(resolve => setTimeout(resolve, betweenDelay));
     }
   }
+
+  const totalSendTime = ((Date.now() - sendStartTime) / 1000).toFixed(1);
+  
+  log.info(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  log.info(`   📊 Pipeline "${pipelineName}" Summary:`);
+  log.info(`      ✅ Successful: ${successCount}`);
+  log.info(`      ⏭️  Skipped: ${skippedCount}`);
+  log.info(`      ❌ Failed: ${stats.errors}`);
+  log.info(`      ⏱️  Total time: ${totalSendTime}s`);
+  log.info(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 }
 
 // ============================================================================
@@ -411,7 +460,7 @@ export async function routeMessage(sock, message, botConfig) {
     // Check duplicate
     if (fingerprintSet.has(fingerprint)) {
       stats.duplicate++;
-      log.info(`🔁 Duplicate detected: ${fingerprint}`);
+      log.info(`🔁 DUPLICATE DETECTED: ${fingerprint.substring(0, 20)}...`);
       return;
     }
 
@@ -424,7 +473,7 @@ export async function routeMessage(sock, message, botConfig) {
     // Check blocked numbers FIRST
     if (containsBlockedNumber(messageText, config.blockedPhoneNumbers)) {
       stats.blocked++;
-      log.info(`🚫 Blocked number detected`);
+      log.info(`🚫 BLOCKED NUMBER DETECTED - message rejected`);
       return;
     }
 
@@ -437,7 +486,7 @@ export async function routeMessage(sock, message, botConfig) {
     // Check phone number
     if (config.validation.requirePhoneNumber && !hasPhoneNumber(messageText)) {
       stats.noPhone++;
-      log.info(`📵 No phone number found`);
+      log.info(`📵 NO PHONE NUMBER - message rejected`);
       return;
     }
 
@@ -445,7 +494,11 @@ export async function routeMessage(sock, message, botConfig) {
     const rateCheck = checkRateLimits();
     if (!rateCheck.allowed) {
       stats.rateLimited++;
-      log.warn(`⏳ Rate limit hit (${rateCheck.reason})`);
+      log.warn(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      log.warn(`⏳ RATE LIMIT HIT (${rateCheck.reason})`);
+      log.warn(`   Hourly: ${messageCountHourly}/${config.rateLimits.hourly}`);
+      log.warn(`   Daily: ${messageCountDaily}/${config.rateLimits.daily}`);
+      log.warn(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       return;
     }
 
@@ -453,7 +506,7 @@ export async function routeMessage(sock, message, botConfig) {
     const cbCheck = checkCircuitBreaker();
     if (cbCheck.open) {
       stats.circuitOpen++;
-      log.warn(`🔒 Circuit breaker open, skipping`);
+      log.warn(`🔒 CIRCUIT BREAKER OPEN - message skipped`);
       return;
     }
 
@@ -465,41 +518,63 @@ export async function routeMessage(sock, message, botConfig) {
     const uniqueCities = [...new Set(allConfiguredCities)];
     const detectedCity = extractPickupCity(messageText, uniqueCities);
 
-    log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    log.info(`📨 Message from: ${sourceGroupId.substring(0, 20)}...`);
+    // ━━━ BEGIN ROUTING ━━━
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info('📨 NEW MESSAGE RECEIVED');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     log.info(`🌍 Detected city: ${detectedCity || 'NONE'}`);
-    log.info(`📝 Text preview: ${messageText.substring(0, 60)}...`);
+    log.info(`📝 Message preview: "${messageText.substring(0, 80)}${messageText.length > 80 ? '...' : ''}"`);
+    log.info(`🔑 Fingerprint: ${fingerprint.substring(0, 25)}...`);
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     // Match pipelines
     const matchedPipelines = matchPipelines(detectedCity);
 
     if (matchedPipelines.length === 0) {
       stats.noCity++;
-      log.info(`❌ No pipeline matched`);
+      log.info(`❌ NO PIPELINE MATCHED`);
+      log.info(`   City: ${detectedCity || 'none'}`);
+      log.info(`   Available pipelines: ${config.pipelines.map(p => p.name).join(', ')}`);
       log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       return;
     }
 
-    log.info(`🎯 Matched pipelines: ${matchedPipelines.map(p => p.name).join(', ')}`);
+    log.info(`🎯 MATCHED PIPELINES: ${matchedPipelines.length}`);
+    matchedPipelines.forEach((p, idx) => {
+      log.info(`   ${idx + 1}. ${p.name} (${p.targetGroups.length} targets)`);
+    });
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     // Increment rate limit counters
     incrementRateLimitCounters();
 
     // Send to all matched pipelines
     for (const pipeline of matchedPipelines) {
-      log.info(`📤 Routing to pipeline: ${pipeline.name} (${pipeline.targetGroups.length} groups)`);
+      log.info(`📤 ROUTING TO PIPELINE: ${pipeline.name}`);
+      log.info(`   City scope: [${pipeline.cityScope.join(', ')}]`);
+      log.info(`   Target groups: ${pipeline.targetGroups.length}`);
       
-      await sendToTargets(sock, pipeline.targetGroups, messageText);
+      await sendToTargets(sock, pipeline.targetGroups, messageText, pipeline.name);
       
       stats.routed++;
     }
 
-    log.info(`✅ Routing complete`);
-    log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info('✅ ROUTING COMPLETE');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info(`📊 Rate limits: ${messageCountHourly}/${config.rateLimits.hourly} hourly, ${messageCountDaily}/${config.rateLimits.daily} daily`);
+    log.info(`📈 Session stats: Processed ${stats.processed}, Routed ${stats.routed}, Ignored ${stats.ignored}`);
+    log.info(`🗑️  Fingerprint cache: ${fingerprintSet.size}/${config.deduplication.maxFingerprintCache}`);
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   } catch (error) {
     stats.errors++;
-    log.error(`❌ Router error: ${error.message}`);
+    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.error('❌ ROUTER ERROR');
+    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.error(`   Message: ${error.message}`);
+    log.error(`   Stack: ${error.stack}`);
+    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     recordCircuitBreakerFailure();
   }
 }
@@ -528,11 +603,24 @@ export function getRouterStats() {
 
 export function cleanupRouter(botConfig) {
   if (botConfig && log) {
-    log.info('🧹 Cleaning up router...');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info('🧹 ROUTER CLEANUP');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     // Clear timers
     lastSendTimeByGroup.clear();
+    log.info('   ✅ Cooldown timers cleared');
     
-    log.info('✅ Router cleanup complete');
+    // Log final stats
+    log.info(`   📊 Final stats:`);
+    log.info(`      Processed: ${stats.processed}`);
+    log.info(`      Routed: ${stats.routed}`);
+    log.info(`      Ignored: ${stats.ignored}`);
+    log.info(`      Duplicates: ${stats.duplicate}`);
+    log.info(`      Errors: ${stats.errors}`);
+    
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    log.info('✅ ROUTER CLEANUP COMPLETE');
+    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 }

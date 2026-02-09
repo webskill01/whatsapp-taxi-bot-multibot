@@ -53,6 +53,73 @@
       color: #333;
     }
 
+    .refresh-controls {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+
+    .last-updated {
+      color: #666;
+      font-size: 0.85em;
+      flex: 1;
+    }
+
+    .auto-refresh-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9em;
+      color: #666;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 48px;
+      height: 24px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: 0.3s;
+      border-radius: 24px;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .toggle-slider {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+    }
+
+    input:checked + .toggle-slider:before {
+      transform: translateX(24px);
+    }
+
     .port-list {
       display: flex;
       gap: 10px;
@@ -81,6 +148,11 @@
 
     .btn-add:hover {
       opacity: 0.9;
+    }
+
+    .btn-add:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
 
     .bots-grid {
@@ -144,6 +216,7 @@
       font-size: 0.9em;
       font-weight: 600;
       margin: 10px 0;
+      transition: background 0.3s ease, color 0.3s ease;
     }
 
     .status.connected {
@@ -218,6 +291,7 @@
       display: flex;
       justify-content: space-between;
       margin: 5px 0;
+      transition: all 0.3s ease;
     }
 
     footer {
@@ -264,6 +338,16 @@
       margin-left: 5px;
       font-weight: 600;
     }
+
+    .updating-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: #667eea;
+      border-radius: 50%;
+      margin-left: 8px;
+      animation: pulse 1s infinite;
+    }
   </style>
 </head>
 <body>
@@ -283,11 +367,25 @@
         <input type="number" class="port-input" placeholder="3002" value="3002">
       </div>
       <button class="btn-add" onclick="addPortInput()">➕ Add Port</button>
-      <button class="btn-add" onclick="refreshBots()">🔄 Refresh Bots</button>
+      <button class="btn-add" onclick="manualRefresh()" id="refresh-btn">🔄 Refresh Now</button>
+      
+      <div class="refresh-controls">
+        <div class="last-updated">
+          Last updated: <strong id="last-update-time">Never</strong>
+          <span id="updating-indicator" class="updating-indicator" style="display: none;"></span>
+        </div>
+        <div class="auto-refresh-toggle">
+          <span>Auto-refresh</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="auto-refresh-toggle" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
       
       <div class="info-box">
         💡 <strong>Tip:</strong> The dashboard auto-detects bot names from each port's /status endpoint. 
-        Make sure each bot is running and accessible at its configured port.
+        Hover over a bot card to pause auto-refresh.
       </div>
       
       <div class="warning-box" id="connection-warning" style="display: none;">
@@ -307,9 +405,14 @@
   </div>
 
   <script>
-    // ✅ FIXED: Use dynamic hostname instead of hardcoded localhost
     const HOST = window.location.hostname || 'localhost';
     
+    let autoRefreshEnabled = true;
+    let refreshInterval = null;
+    let isRefreshing = false;
+    let isPaused = false;
+    let botsData = new Map(); // Store bot data to avoid full re-render
+
     function addPortInput() {
       const portList = document.getElementById('port-list');
       const input = document.createElement('input');
@@ -328,9 +431,8 @@
 
     async function checkBotStatus(port) {
       try {
-        // ✅ FIXED: Use dynamic HOST variable
         const res = await fetch(`http://${HOST}:${port}/status`, {
-          signal: AbortSignal.timeout(3000) // 3s timeout
+          signal: AbortSignal.timeout(3000)
         });
         const data = await res.json();
         return { ...data, port, online: true };
@@ -342,9 +444,8 @@
 
     async function getBotStats(port) {
       try {
-        // ✅ FIXED: Use dynamic HOST variable
         const res = await fetch(`http://${HOST}:${port}/stats`, {
-          signal: AbortSignal.timeout(3000) // 3s timeout
+          signal: AbortSignal.timeout(3000)
         });
         const data = await res.json();
         return data;
@@ -355,19 +456,10 @@
 
     function getBotIcon(name) {
       const icons = {
-        'delhi': '🏛️',
-        'mumbai': '🌊',
-        'bangalore': '💻',
-        'chennai': '🏖️',
-        'kolkata': '🎭',
-        'hyderabad': '💎',
-        'pune': '🏰',
-        'ahmedabad': '🕌',
-        'jaipur': '🐘',
-        'lucknow': '🏛️',
-        'kanav': '👨‍💼',
-        'punjab': '🌾',
-        'tricity': '🏙️'
+        'delhi': '🏛️', 'mumbai': '🌊', 'bangalore': '💻',
+        'chennai': '🏖️', 'kolkata': '🎭', 'hyderabad': '💎',
+        'pune': '🏰', 'ahmedabad': '🕌', 'jaipur': '🐘',
+        'lucknow': '🏛️', 'kanav': '👨‍💼', 'punjab': '🌾', 'tricity': '🏙️'
       };
       
       const nameLower = (name || '').toLowerCase();
@@ -377,10 +469,7 @@
       return '🤖';
     }
 
-    async function renderBot(port) {
-      const status = await checkBotStatus(port);
-      const stats = await getBotStats(port);
-
+    function formatBotCard(port, status, stats) {
       let statusClass = 'loading';
       let statusText = '⏳ Checking...';
       let botName = status.botName || `Bot Port ${port}`;
@@ -436,7 +525,7 @@
       }
 
       return `
-        <div class="bot-card">
+        <div class="bot-card" data-port="${port}" onmouseenter="pauseRefresh()" onmouseleave="resumeRefresh()">
           <div class="bot-header">
             <div class="bot-icon">${botIcon}</div>
             <div class="bot-info">
@@ -445,9 +534,9 @@
             </div>
           </div>
           
-          <div class="status ${statusClass}">${statusText}</div>
+          <div class="status ${statusClass}" data-status>${statusText}</div>
           
-          ${statsHTML}
+          <div data-stats>${statsHTML}</div>
           
           <div class="actions">
             <a href="/qr-scanner.html?port=${port}" 
@@ -466,7 +555,85 @@
       `;
     }
 
-    async function refreshBots() {
+    async function updateBotCard(port) {
+      const status = await checkBotStatus(port);
+      const stats = await getBotStats(port);
+      
+      // Store data for future updates
+      botsData.set(port, { status, stats });
+
+      // Find existing card
+      const card = document.querySelector(`.bot-card[data-port="${port}"]`);
+      
+      if (!card) {
+        // Card doesn't exist, need full render
+        return null;
+      }
+
+      // Update only status and stats (not entire card)
+      const statusEl = card.querySelector('[data-status]');
+      const statsEl = card.querySelector('[data-stats]');
+
+      if (statusEl) {
+        let statusClass = 'loading';
+        let statusText = '⏳ Checking...';
+
+        if (!status.online) {
+          statusClass = 'offline';
+          statusText = '❌ Offline';
+        } else if (status.connected) {
+          statusClass = 'connected';
+          statusText = '✅ Connected';
+        } else if (status.qrAvailable) {
+          statusClass = 'disconnected';
+          statusText = '📱 QR Ready';
+        } else {
+          statusClass = 'disconnected';
+          statusText = '⏳ Starting...';
+        }
+
+        statusEl.className = `status ${statusClass}`;
+        statusEl.textContent = statusText;
+      }
+
+      if (statsEl && stats && stats.messageCount) {
+        const dailyLimit = stats.config?.rateLimits?.daily || 1000;
+        const hourlyLimit = stats.config?.rateLimits?.hourly || 100;
+        const dailyUsage = Math.round((stats.messageCount.daily / dailyLimit) * 100);
+        const hourlyUsage = Math.round((stats.messageCount.hourly / hourlyLimit) * 100);
+
+        statsEl.innerHTML = `
+          <div class="stats">
+            <div class="stats-item">
+              <span>📨 Today:</span>
+              <strong>${stats.messageCount.daily || 0}/${dailyLimit} (${dailyUsage}%)</strong>
+            </div>
+            <div class="stats-item">
+              <span>⏱️ This hour:</span>
+              <strong>${stats.messageCount.hourly || 0}/${hourlyLimit} (${hourlyUsage}%)</strong>
+            </div>
+            <div class="stats-item">
+              <span>✅ Processed:</span>
+              <strong>${stats.stats?.processed || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>🔁 Duplicates:</span>
+              <strong>${stats.stats?.duplicate || 0}</strong>
+            </div>
+            ${stats.circuitBreaker?.isOpen ? `
+            <div class="stats-item" style="color: #dc3545;">
+              <span>🔒 Circuit:</span>
+              <strong>OPEN (${stats.circuitBreaker.failureCount} fails)</strong>
+            </div>
+            ` : ''}
+          </div>
+        `;
+      }
+
+      return { status, stats };
+    }
+
+    async function fullRender() {
       const grid = document.getElementById('bots-grid');
       const ports = getPorts();
       
@@ -477,24 +644,104 @@
       
       grid.innerHTML = '<p style="color:white;text-align:center;grid-column:1/-1;" class="loading">🔄 Loading bots...</p>';
       
-      const botsHTML = await Promise.all(ports.map(port => renderBot(port)));
+      const botsHTML = await Promise.all(ports.map(async port => {
+        const status = await checkBotStatus(port);
+        const stats = await getBotStats(port);
+        botsData.set(port, { status, stats });
+        return formatBotCard(port, status, stats);
+      }));
+      
       grid.innerHTML = botsHTML.join('');
 
-      // ✅ Show warning if any bots are offline
-      const offlineBots = botsHTML.filter(html => html.includes('status offline')).length;
+      // Show warning if any bots are offline
+      const offlineBots = Array.from(botsData.values()).filter(data => !data.status.online).length;
       const warningBox = document.getElementById('connection-warning');
-      if (offlineBots > 0) {
-        warningBox.style.display = 'block';
+      warningBox.style.display = offlineBots > 0 ? 'block' : 'none';
+    }
+
+    async function refreshBots() {
+      if (isRefreshing || isPaused) return;
+      
+      isRefreshing = true;
+      const indicator = document.getElementById('updating-indicator');
+      indicator.style.display = 'inline-block';
+      
+      const ports = getPorts();
+      const existingCards = document.querySelectorAll('.bot-card');
+      
+      // If ports changed or no cards exist, do full render
+      if (ports.length !== existingCards.length || existingCards.length === 0) {
+        await fullRender();
       } else {
-        warningBox.style.display = 'none';
+        // Otherwise, just update existing cards
+        await Promise.all(ports.map(port => updateBotCard(port)));
+        
+        // Update warning box
+        const offlineBots = Array.from(botsData.values()).filter(data => !data.status.online).length;
+        const warningBox = document.getElementById('connection-warning');
+        warningBox.style.display = offlineBots > 0 ? 'block' : 'none';
+      }
+      
+      // Update last update time
+      const now = new Date();
+      document.getElementById('last-update-time').textContent = now.toLocaleTimeString();
+      
+      indicator.style.display = 'none';
+      isRefreshing = false;
+    }
+
+    async function manualRefresh() {
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true;
+      btn.textContent = '🔄 Refreshing...';
+      
+      await fullRender();
+      
+      const now = new Date();
+      document.getElementById('last-update-time').textContent = now.toLocaleTimeString();
+      
+      btn.disabled = false;
+      btn.textContent = '🔄 Refresh Now';
+    }
+
+    function pauseRefresh() {
+      isPaused = true;
+    }
+
+    function resumeRefresh() {
+      isPaused = false;
+    }
+
+    // Auto-refresh toggle
+    document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
+      autoRefreshEnabled = e.target.checked;
+      
+      if (autoRefreshEnabled) {
+        startAutoRefresh();
+      } else {
+        stopAutoRefresh();
+      }
+    });
+
+    function startAutoRefresh() {
+      if (refreshInterval) clearInterval(refreshInterval);
+      refreshInterval = setInterval(() => {
+        if (autoRefreshEnabled) refreshBots();
+      }, 10000); // 10 seconds
+    }
+
+    function stopAutoRefresh() {
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
       }
     }
 
     // Initial render
-    refreshBots();
+    fullRender();
 
-    // Auto-refresh every 5 seconds
-    setInterval(refreshBots, 5000);
+    // Start auto-refresh
+    startAutoRefresh();
   </script>
 </body>
 </html>

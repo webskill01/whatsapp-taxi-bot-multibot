@@ -126,7 +126,7 @@ export const GLOBAL_CONFIG = {
   // 🔒 Anti-ban hardening (ported from new core)
   rateLimits: {
     hourly: 100,
-    daily: 1000
+    daily: 1200
   },
 
   validation: {

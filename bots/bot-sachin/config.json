@@ -8,25 +8,10 @@
   ],
   "pipelines": [
     {
-      "name": "jalandhar-cluster",
-      "cityScope": ["Jalandhar", "Ludhiana", "Patiala"],
-      "targetGroups": [
-        "@g.us"
-      ]
-    },
-    {
-      "name": "chandigarh-cluster",
-      "cityScope": ["Chandigarh", "Mohali", "Zirakpur"],
-      "targetGroups": [
-        "@g.us"
-      ]
-    },
-    {
       "name": "all-mix",
       "cityScope": ["*"],
       "targetGroups": [
-        "@g.us",
-        "@g.us"
+        "120363424849920943@g.us"
       ]
     }
   ]
