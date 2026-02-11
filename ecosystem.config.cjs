@@ -1,156 +1,118 @@
 module.exports = {
   apps: [
-    // ✅ Bot Instance 1: Delhi
     {
       name: "bot-delhi",
       script: "./bots/bot-delhi/start.js",
       cwd: "./",
       instances: 1,
       exec_mode: "fork",
+
       autorestart: true,
       watch: false,
 
-      // ✅ Memory management
-      max_memory_restart: "500M",
+      // 🔒 Stability
+      restart_delay: 8000,
+      min_uptime: 20000,
+      max_restarts: 5,
 
-      // ✅ Restart behavior
-      restart_delay: 5000,
-      min_uptime: 15000,
-      max_restarts: 10,
-
-      // ✅ Graceful shutdown
+      // 🧹 Graceful shutdown
       kill_timeout: 15000,
+      kill_signal: "SIGTERM",
       shutdown_with_message: true,
 
-      // ✅ Logging
+      // 🧠 Memory
+      max_memory_restart: "500M",
+
+      // 📜 Logs
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
       error_file: "./logs/bot-delhi-error.log",
       out_file: "./logs/bot-delhi-out.log",
       merge_logs: true,
       log_type: "raw",
-
-      // ✅ Rotate logs daily
       max_size: "10M",
-      retain: 7, // Keep 7 days of logs
+      retain: 7,
 
-      // ✅ Environment
       env: {
         NODE_ENV: "production",
-        NODE_OPTIONS: "--max-old-space-size=480",
         TZ: "Asia/Kolkata",
+        NODE_OPTIONS: "--max-old-space-size=480",
+        BOT_NAME: "bot-delhi",
+        STATS_PORT: 3001,
       },
     },
 
-    // ✅ Bot Instance 2: Sachin (FIXED LOG PATHS)
     {
       name: "bot-sachin",
       script: "./bots/bot-sachin/start.js",
       cwd: "./",
       instances: 1,
       exec_mode: "fork",
+
       autorestart: true,
       watch: false,
 
-      // ✅ Memory management
-      max_memory_restart: "500M",
+      restart_delay: 8000,
+      min_uptime: 20000,
+      max_restarts: 5,
 
-      // ✅ Restart behavior
-      restart_delay: 5000,
-      min_uptime: 15000,
-      max_restarts: 10,
-
-      // ✅ Graceful shutdown
       kill_timeout: 15000,
+      kill_signal: "SIGTERM",
       shutdown_with_message: true,
 
-      // ✅ Logging (FIXED - was using bot-delhi paths)
+      max_memory_restart: "500M",
+
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      error_file: "./logs/bot-sachin-error.log", // ← FIXED
-      out_file: "./logs/bot-sachin-out.log", // ← FIXED
+      error_file: "./logs/bot-sachin-error.log",
+      out_file: "./logs/bot-sachin-out.log",
       merge_logs: true,
       log_type: "raw",
-
-      // ✅ Rotate logs daily
       max_size: "10M",
-      retain: 7, // Keep 7 days of logs
+      retain: 7,
 
-      // ✅ Environment
       env: {
         NODE_ENV: "production",
-        NODE_OPTIONS: "--max-old-space-size=480",
         TZ: "Asia/Kolkata",
+        NODE_OPTIONS: "--max-old-space-size=480",
+        BOT_NAME: "bot-sachin",
+        STATS_PORT: 3002,
       },
     },
 
-    // ✅ Bot Instance 2: Manny (FIXED LOG PATHS)
     {
       name: "bot-manny",
       script: "./bots/bot-manny/start.js",
       cwd: "./",
       instances: 1,
       exec_mode: "fork",
+
       autorestart: true,
       watch: false,
 
-      // ✅ Memory management
-      max_memory_restart: "500M",
+      restart_delay: 8000,
+      min_uptime: 20000,
+      max_restarts: 5,
 
-      // ✅ Restart behavior
-      restart_delay: 5000,
-      min_uptime: 15000,
-      max_restarts: 10,
-
-      // ✅ Graceful shutdown
       kill_timeout: 15000,
+      kill_signal: "SIGTERM",
       shutdown_with_message: true,
 
-      // ✅ Logging (FIXED - was using bot-delhi paths)
+      max_memory_restart: "500M",
+
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      error_file: "./logs/bot-manny-error.log", // ← FIXED
-      out_file: "./logs/bot-manny-out.log", // ← FIXED
+      error_file: "./logs/bot-manny-error.log",
+      out_file: "./logs/bot-manny-out.log",
       merge_logs: true,
       log_type: "raw",
-
-      // ✅ Rotate logs daily
       max_size: "10M",
-      retain: 7, // Keep 7 days of logs
+      retain: 7,
 
-      // ✅ Environment
       env: {
         NODE_ENV: "production",
-        NODE_OPTIONS: "--max-old-space-size=480",
         TZ: "Asia/Kolkata",
+        NODE_OPTIONS: "--max-old-space-size=480",
+        BOT_NAME: "bot-manny",
+        STATS_PORT: 3003,
       },
     },
-
-    // ============================================================================
-    // 📝 Template for adding more bots:
-    // ============================================================================
-    // {
-    //   name: "bot-punjab",
-    //   script: "./bots/bot-punjab/start.js",
-    //   cwd: "./",
-    //   instances: 1,
-    //   exec_mode: "fork",
-    //   autorestart: true,
-    //   watch: false,
-    //   max_memory_restart: "500M",
-    //   restart_delay: 5000,
-    //   min_uptime: 15000,
-    //   max_restarts: 10,
-    //   kill_timeout: 15000,
-    //   shutdown_with_message: true,
-    //   log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-    //   error_file: "./logs/bot-punjab-error.log",
-    //   out_file: "./logs/bot-punjab-out.log",
-    //   merge_logs: true,
-    //   log_type: "raw",
-    //   max_size: "10M",
-    //   retain: 7,
-    //   env: {
-    //     NODE_ENV: "production",
-    //     NODE_OPTIONS: "--max-old-space-size=480",
-    //   },
-    // },
   ],
 };

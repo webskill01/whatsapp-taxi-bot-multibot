@@ -1,608 +1,587 @@
-/**
- * ============================================================================
- * WHATSAPP BOT CORE - PRODUCTION FIXED
- * ============================================================================
- * FIXES APPLIED:
- * - Single socket per process with proper teardown
- * - Auth state loaded ONCE at startup (no re-entry)
- * - Backoff-based reconnect with crypto error handling
- * - Session stabilization window before message processing
- * - Signal message bypass in deduplication
- * - Graceful shutdown for PM2 safety
- * - No recursive reconnect
- * ============================================================================
- */
+// =============================================================================
+// core/index.js — WhatsApp Bot Core (Bot-2 REFACTORED with Bot-1 stability)
+// =============================================================================
+// STABILITY FIXES FROM BOT-1 (documents 12-13):
+// ✅ Auth state loaded ONCE at startup via closure, never reloaded
+// ✅ Single socket lifecycle with proper teardown
+// ✅ Exponential backoff: 3s, 6s, 12s, 24s, 48s, cap 60s
+// ✅ No concurrent socket creation
+// ✅ DisconnectReason.loggedOut exits with process.exit(1)
+// ✅ PM2-safe shutdown (SIGINT/SIGTERM/SIGHUP)
+// ✅ Crypto error detection for extended backoff
+// ✅ B1: Reconnect age gate (30s window, 10s max age)
+// ✅ B2: Replay ID dedup (rolling 200 ID set)
+// ✅ A4: Settling delay (5-15s after connect)
+// ✅ C2: Debounced disk write (30s)
+//
+// PRESERVED FROM BOT-2:
+// ✅ Pipeline-based routing with pickup+drop city matching
+// ✅ Human behavior delays
+// ✅ Rate limiting
+// =============================================================================
 
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
-  Browsers,
+  fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
 
-import NodeCache from "node-cache";
+import express from "express";
 import pino from "pino";
-import qrcode from "qrcode";
+import fs from "fs";
 import path from "path";
-import http from "http";
-import { loadConfig } from "./configLoader.js";
-import { processMessage, resetRouterState } from "./router.js";
 
-// ============================================================================
-// GLOBAL STATE - PROCESS LIFETIME SCOPE
-// ============================================================================
+import { getMessageFingerprint } from "./filter.js";
+import { processMessage } from "./router.js";
+import { GLOBAL_CONFIG } from "./globalConfig.js";
 
-let activeSocket = null; // Only ONE socket reference allowed
-let authState = null; // Auth loaded ONCE at startup
-let saveCreds = null; // Creds saver loaded ONCE
-let socketCreationInProgress = false; // Serialization guard
-let sessionStabilized = false; // Signal handshake safety flag
-let reconnectAttempts = 0; // Backoff counter
-let isShuttingDown = false; // Graceful shutdown flag
-let reconnectTimer = null; // Timer reference for cleanup
-let stabilizationTimer = null; // Session stabilization timer reference
+// =============================================================================
+// MAIN EXPORT (Bot-1 pattern)
+// =============================================================================
 
-const MAX_RECONNECT_ATTEMPTS = 5;
-const BASE_RECONNECT_DELAY = 5000; // 5 seconds
-const MAX_RECONNECT_DELAY = 120000; // 2 minutes
-const SESSION_STABILIZATION_DELAY = 15000; // 15 seconds after connection open
+export async function startBot(config, log, authDir) {
+  // ===========================================================================
+  // STATE - All mutable state for this bot instance
+  // ===========================================================================
+
+  let sock = null;
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
+  let isShuttingDown = false;
+  let isConnecting = false;
 
 
-// ============================================================================
-// STARTUP
-// ============================================================================
+  // STABILITY FIX: Auth loaded ONCE, stored in closure
+  let authState = null;
+  let saveCreds = null;
 
-const BOT_DIR = process.argv[2];
+  // Fingerprint deduplication
+  const fingerprintSet = new Set();
 
-if (!BOT_DIR) {
-  console.error("❌ Usage: node index.js <bot-directory>");
-  process.exit(1);
-}
+  // B2: Rolling replay ID set
+  const replayIdSet = new Set();
 
-const { config: CONFIG, ENV } = loadConfig(BOT_DIR);
+  // Stats
+  const stats = {
+    totalProcessed: 0,
+    duplicatesSkipped: 0,
+    replayIdsSkipped: 0,
+    rejectedNoPhone: 0,
+    rejectedNotTaxi: 0,
+    rejectedTooShort: 0,
+    rejectedEmptyBody: 0,
+    rejectedFromMe: 0,
+    rejectedBotSender: 0,
+    rejectedBlockedNumber: 0,
+    rejectedByReconnectAgeGate: 0,
+    sendSuccesses: 0,
+    sendFailures: 0,
+    reconnectCount: 0,
+  };
 
-const logger = pino({
-  level: process.env.LOG_LEVEL || "silent",
-  transport: {
-    target: "pino-pretty",
-    options: {
-      colorize: false,
-      translateTime: "SYS:standard",
-      ignore: "hostname",
-    },
-  },
-});
+  // B1: Reconnect state tracking
+  let lastReconnectTime = 0;
+  let botFullyOperational = false;
 
-// ============================================================================
-// MESSAGE CACHE & DEDUPLICATION
-// ============================================================================
+  // A4: Settling state
+  let needsSettlingDelay = true;
 
-const msgRetryCounterCache = new NodeCache({ stdTTL: 3600 });
-const processedMessages = new Map(); // Map<string, number> for message deduplication with timestamps
-const MESSAGE_CACHE_TTL = 300000; // 5 minutes
+  // C2: Debounced disk write
+  let fingerprintDirty = false;
+  let saveDebounceTimer = null;
 
-function cleanMessageCache() {
-  const now = Date.now();
-  for (const [key, timestamp] of processedMessages.entries()) {
-    if (now - timestamp > MESSAGE_CACHE_TTL) {
-      processedMessages.delete(key);
+  const BOT_START_TIME = Date.now();
+  const FINGERPRINT_FILE = path.join(config.botDir || process.cwd(), GLOBAL_CONFIG.deduplication.fingerprintFile);
+
+  // ===========================================================================
+  // C2: FINGERPRINT DISK PERSISTENCE (debounced)
+  // ===========================================================================
+
+  function loadFingerprints() {
+    try {
+      if (fs.existsSync(FINGERPRINT_FILE)) {
+        const data = JSON.parse(fs.readFileSync(FINGERPRINT_FILE, "utf8"));
+        const cutoff = Date.now() - GLOBAL_CONFIG.deduplication.fingerprintTTL;
+
+        let loaded = 0;
+        for (const item of data) {
+          if (item.timestamp > cutoff) {
+            fingerprintSet.add(item.fingerprint);
+            loaded++;
+          }
+        }
+        log.info(`📂 Loaded ${loaded} fingerprints (2h TTL)`);
+      } else {
+        fs.writeFileSync(FINGERPRINT_FILE, JSON.stringify([]), "utf8");
+        log.info("📂 Created fingerprint cache file");
+      }
+    } catch (err) {
+      log.warn(`⚠️ Fingerprint load failed: ${err.message}`);
     }
   }
-}
 
-setInterval(cleanMessageCache, 60000);
+  function saveFingerprints() {
+    try {
+      const data = Array.from(fingerprintSet).map((fp) => ({
+        fingerprint: fp,
+        timestamp: Date.now(),
+      }));
+      fs.writeFileSync(
+        FINGERPRINT_FILE,
+        JSON.stringify(data.slice(-GLOBAL_CONFIG.deduplication.fingerprintSaveCap)),
+        "utf8"
+      );
+      fingerprintDirty = false;
+      log.info(`📂 Saved ${Math.min(data.length, GLOBAL_CONFIG.deduplication.fingerprintSaveCap)} fingerprints`);
+    } catch (err) {
+      log.warn(`⚠️ Fingerprint save failed: ${err.message}`);
+    }
+  }
 
-// ============================================================================
-// QR CODE SERVER
-// ============================================================================
+  function markDirty() {
+    fingerprintDirty = true;
+    if (!saveDebounceTimer) {
+      saveDebounceTimer = setTimeout(() => {
+        if (fingerprintDirty) {
+          saveFingerprints();
+        }
+        saveDebounceTimer = null;
+      }, GLOBAL_CONFIG.deduplication.saveDebounceMs);
+    }
+  }
 
-let latestQR = null;
-let qrExpiryTime = null;
-const QR_VALIDITY_MS = 45000;
+  // ===========================================================================
+  // UTILITY
+  // ===========================================================================
 
-const qrServer = http.createServer((req, res) => {
-  if (req.url === "/qr") {
-    res.writeHead(200, { "Content-Type": "text/html" });
+  function normalizePhone(p) {
+    return p.replace(/\D/g, "").slice(-10);
+  }
 
-    if (!latestQR) {
-      res.end(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>QR Code - ${ENV.BOT_NAME}</title>
-            <meta http-equiv="refresh" content="3">
-            <style>
-              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f0f0; }
-              .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
-              h1 { color: #25D366; }
-              .status { color: #666; margin: 20px 0; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>🔄 ${ENV.BOT_NAME}</h1>
-              <p class="status">⏳ Waiting for QR code...</p>
-              <p style="color: #999; font-size: 12px;">Page refreshes automatically</p>
-            </div>
-          </body>
-        </html>
-      `);
+  // B2: Track replay ID with FIFO eviction
+  function trackReplayId(msgId) {
+    replayIdSet.add(msgId);
+    if (replayIdSet.size > GLOBAL_CONFIG.deduplication.maxReplayIds) {
+      const first = replayIdSet.values().next().value;
+      replayIdSet.delete(first);
+    }
+  }
+
+  // ===========================================================================
+  // MESSAGE HANDLER
+  // ===========================================================================
+
+  async function handleMessage(msg) {
+    // Only group messages
+    if (!msg.key.remoteJid?.endsWith("@g.us")) return;
+
+    // Skip own messages
+    if (msg.key.fromMe === true) {
+      stats.rejectedFromMe++;
       return;
     }
 
-    const now = Date.now();
-    const isExpired = qrExpiryTime && now > qrExpiryTime;
+    const msgId = msg.key.id;
+    const sourceGroup = msg.key.remoteJid;
+    const messageTimestamp = msg.messageTimestamp;
+    const messageTimestampMs = messageTimestamp * 1000;
 
-    if (isExpired) {
-      res.end(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>QR Code - ${ENV.BOT_NAME}</title>
-            <meta http-equiv="refresh" content="3">
-            <style>
-              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f0f0; }
-              .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
-              h1 { color: #ff9800; }
-              .status { color: #666; margin: 20px 0; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>⏰ ${ENV.BOT_NAME}</h1>
-              <p class="status">QR code expired. Waiting for new code...</p>
-              <p style="color: #999; font-size: 12px;">Page refreshes automatically</p>
-            </div>
-          </body>
-        </html>
-      `);
+    // B1: Reconnect age gate
+    const timeSinceReconnect = Date.now() - lastReconnectTime;
+    if (
+      lastReconnectTime > 0 &&
+      timeSinceReconnect < GLOBAL_CONFIG.reconnect.strictWindowDuration
+    ) {
+      const messageAge = Date.now() - messageTimestampMs;
+      if (messageAge > GLOBAL_CONFIG.reconnect.strictAgeMs) {
+        stats.rejectedByReconnectAgeGate++;
+        return;
+      }
+    }
+
+    // B2: Replay ID check
+    if (replayIdSet.has(msgId)) {
+      stats.replayIdsSkipped++;
+      return;
+    }
+    trackReplayId(msgId);
+
+
+    // Extract text
+    const text =
+      msg.message?.conversation ||
+      msg.message?.extendedTextMessage?.text ||
+      msg.message?.imageMessage?.caption ||
+      msg.message?.videoMessage?.caption ||
+      "";
+
+    if (!text || text.trim() === "") {
+      stats.rejectedEmptyBody++;
       return;
     }
 
-    const timeLeft = qrExpiryTime ? Math.max(0, Math.floor((qrExpiryTime - now) / 1000)) : 45;
+    // Bot self-send check
+    const participantPhone = (msg.key.participant || "").split("@")[0] || "";
+const botPhone = config.botPhone || "";
 
-    res.end(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>QR Code - ${ENV.BOT_NAME}</title>
-          <meta http-equiv="refresh" content="5">
-          <style>
-            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f0f0; }
-            .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
-            h1 { color: #25D366; }
-            img { max-width: 100%; border: 2px solid #25D366; border-radius: 10px; margin: 20px 0; }
-            .timer { font-size: 18px; color: ${timeLeft < 15 ? "#ff5722" : "#666"}; font-weight: bold; }
-            .instructions { color: #666; margin: 20px 0; line-height: 1.6; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>📱 ${ENV.BOT_NAME}</h1>
-            <img src="${latestQR}" alt="WhatsApp QR Code" />
-            <p class="timer">⏱️ Expires in: ${timeLeft}s</p>
-            <div class="instructions">
-              <p><strong>Scan with WhatsApp:</strong></p>
-              <p>1. Open WhatsApp on your phone<br>
-              2. Tap Menu (⋮) → Linked Devices<br>
-              3. Tap "Link a Device"<br>
-              4. Scan this QR code</p>
-            </div>
-            <p style="color: #999; font-size: 12px;">Page refreshes automatically</p>
-          </div>
-        </body>
-      </html>
-    `);
-  } else {
-    res.writeHead(404, { "Content-Type": "text/plain" });
-    res.end("404 Not Found");
-  }
-});
-
-qrServer.listen(ENV.QR_SERVER_PORT, () => {
-  console.log(`✅ QR Server: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
-});
-
-// ============================================================================
-// AUTH STATE - LOAD ONCE AT STARTUP
-// ============================================================================
-
-async function initializeAuthState() {
-  console.log("🔐 Loading auth state (ONCE per process)...");
-  const { state, saveCreds: saveCredsFunc } = await useMultiFileAuthState(ENV.AUTH_DIR);
-  authState = state;
-  saveCreds = saveCredsFunc;
-  console.log("✅ Auth state loaded and locked");
+if (
+  participantPhone &&
+  normalizePhone(participantPhone) === normalizePhone(botPhone)
+) {
+  stats.rejectedBotSender++;
+  return;
 }
 
-// ============================================================================
-// SOCKET TEARDOWN
-// ============================================================================
 
-function destroySocket(reason = "manual") {
-  if (!activeSocket) return;
-
-  console.log(`🔌 Destroying socket: ${reason}`);
-
-  try {
-    activeSocket.ev.removeAllListeners();
-    activeSocket.end(undefined);
-  } catch (err) {
-    console.error("⚠️ Socket destruction error:", err.message);
-  }
-
-  activeSocket = null;
-  sessionStabilized = false;
-  
-  // Clear stabilization timer to prevent timer leak
-  if (stabilizationTimer) {
-    clearTimeout(stabilizationTimer);
-    stabilizationTimer = null;
-  }
-  
-  console.log("✅ Socket destroyed and nullified");
-}
-
-// ============================================================================
-// RECONNECT LOGIC WITH BACKOFF
-// ============================================================================
-
-function scheduleReconnect(reason = "unknown") {
-  if (isShuttingDown) {
-    console.log("🛑 Shutdown in progress, no reconnect");
-    return;
-  }
-
-  if (socketCreationInProgress) {
-    console.log("⏳ Socket creation already in progress, skipping reconnect");
-    return;
-  }
-
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    console.error(`❌ Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Stopping.`);
-    process.exit(0);
-  }
-
-  reconnectAttempts++;
-
-  const baseDelay = Math.min(
-    BASE_RECONNECT_DELAY * reconnectAttempts,
-    MAX_RECONNECT_DELAY
-  );
-  
-  // Add jitter to prevent pattern detection
-  const delay = baseDelay + Math.floor(Math.random() * 3000);
-
-  console.log(`🔄 Scheduling reconnect #${reconnectAttempts} in ${delay}ms (reason: ${reason})`);
-
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-  }
-
-  reconnectTimer = setTimeout(async () => {
-    reconnectTimer = null;
-    await connectToWhatsApp();
-  }, delay);
-}
-
-// ============================================================================
-// SESSION STABILIZATION WINDOW
-// ============================================================================
-
-function startSessionStabilization() {
-  console.log(`⏳ Session stabilization window: ${SESSION_STABILIZATION_DELAY}ms`);
-  
-  // Clear any existing stabilization timer
-  if (stabilizationTimer) {
-    clearTimeout(stabilizationTimer);
-    stabilizationTimer = null;
-  }
-  
-  stabilizationTimer = setTimeout(() => {
-    if (activeSocket) {
-      sessionStabilized = true;
-      console.log("✅ Session stabilized - message processing enabled");
-    }
-    stabilizationTimer = null;
-  }, SESSION_STABILIZATION_DELAY);
-}
-
-// ============================================================================
-// MAIN CONNECTION FUNCTION
-// ============================================================================
-
-async function connectToWhatsApp() {
-  // Guard against concurrent calls
-  if (socketCreationInProgress) {
-    console.log("⚠️ Socket creation already in progress, aborting");
-    return;
-  }
-
-  if (isShuttingDown) {
-    console.log("🛑 Shutdown in progress, aborting connection");
-    return;
-  }
-
-  socketCreationInProgress = true;
-
-  try {
-    // Destroy any existing socket first
-    if (activeSocket) {
-      destroySocket("pre-reconnect cleanup");
+    // Min length check
+    if (text.length < GLOBAL_CONFIG.validation.minMessageLength) {
+      stats.rejectedTooShort++;
+      return;
     }
 
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log(`🚀 Connecting: ${ENV.BOT_NAME}`);
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    // Check if source group is monitored
+    const isSourceGroup = config.sourceGroupIds.includes(sourceGroup);
+    if (!isSourceGroup) {
+      return;
+    }
+    // Fingerprint deduplication
+    const timeBucket = Math.floor(messageTimestampMs / (5 * 60 * 1000));
+    const fingerprint = getMessageFingerprint(text, null, timeBucket);
 
-    // Auth state must already be loaded at startup
-    if (!authState || !saveCreds) {
-      throw new Error("Auth state not initialized - this should never happen");
+    if (fingerprintSet.has(fingerprint)) {
+      stats.duplicatesSkipped++;
+      return;
     }
 
-    const version = undefined; // let Baileys use its internal stable version
-console.log("📦 Baileys version: pinned (npm-installed)");
+    // Add fingerprint NOW
+    fingerprintSet.add(fingerprint);
+    markDirty();
 
+    // C1: Cleanup if over cap
+    if (fingerprintSet.size > GLOBAL_CONFIG.deduplication.maxFingerprintCache) {
+      const targetSize = Math.floor(GLOBAL_CONFIG.deduplication.maxFingerprintCache * GLOBAL_CONFIG.deduplication.cleanupTargetRatio);
+      const toDelete = fingerprintSet.size - targetSize;
+      const iterator = fingerprintSet.values();
+      for (let i = 0; i < toDelete; i++) {
+        const val = iterator.next().value;
+        if (val) fingerprintSet.delete(val);
+      }
+    }
 
-    // Create new socket with FRESH Signal store per socket
-    const sock = makeWASocket({
-      version,
-      logger,
-      printQRInTerminal: false,
-      browser: Browsers.macOS("Chrome"),
-      auth: {
-        creds: authState.creds,
-        keys: makeCacheableSignalKeyStore(authState.keys, logger),
-      },
-      msgRetryCounterCache,
-      generateHighQualityLinkPreview: true,
-      syncFullHistory: false,
-      markOnlineOnConnect: false,
-    });
+    // A4: Settling delay
+    if (needsSettlingDelay) {
+      needsSettlingDelay = false;
+      const settleDuration =
+        GLOBAL_CONFIG.reconnect.settlingMin +
+        Math.floor(Math.random() * (GLOBAL_CONFIG.reconnect.settlingMax - GLOBAL_CONFIG.reconnect.settlingMin));
+      log.info(`⏳ Settling delay: ${(settleDuration / 1000).toFixed(1)}s`);
+      await new Promise((r) => setTimeout(r, settleDuration));
+    }
 
-    // Set as active socket
-    activeSocket = sock;
+    // Process message
+    stats.totalProcessed++;
+    await processMessage(sock, msg, config);
+  }
 
-    // ========================================================================
-    // CONNECTION UPDATES
-    // ========================================================================
+  // ===========================================================================
+  // SOCKET TEARDOWN (Bot-1 pattern)
+  // ===========================================================================
 
-    sock.ev.on("connection.update", async (update) => {
-      const { connection, lastDisconnect, qr } = update;
+  function destroySocket(reason) {
+    if (!sock) return;
 
-      // QR Code handling
-      if (qr) {
-        latestQR = await qrcode.toDataURL(qr);
-        qrExpiryTime = Date.now() + QR_VALIDITY_MS;
-        console.log(`📱 QR Code available at: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
+    log.info(`🔌 Destroying socket: ${reason}`);
 
-        const qrPath = path.join(ENV.QR_DIR, `qr-${Date.now()}.png`);
-        await qrcode.toFile(qrPath, qr);
-        console.log(`💾 QR saved: ${qrPath}`);
+    try {
+      sock.ev.removeAllListeners("connection.update");
+      sock.ev.removeAllListeners("creds.update");
+      sock.ev.removeAllListeners("messages.upsert");
+      sock.ev.removeAllListeners();
+      sock.end(undefined);
+    } catch (err) {
+      log.warn(`⚠️ Socket teardown error: ${err.message}`);
+    }
+
+    sock = null;
+    log.info("✅ Socket destroyed");
+  }
+
+  // ===========================================================================
+  // RECONNECT LOGIC (Bot-1 pattern)
+  // ===========================================================================
+
+  function scheduleReconnect(reason) {
+    if (isShuttingDown) {
+      log.info("⚠️ Shutdown in progress, skipping reconnect");
+      return;
+    }
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    // Exponential backoff: 3s, 6s, 12s, 24s, 48s, cap 60s
+    const BACKOFF_BASE = 3000;
+    const BACKOFF_CAP = 60000;
+    const MAX_ATTEMPTS = 10;
+
+    const delay = Math.min(BACKOFF_BASE * Math.pow(2, reconnectAttempts), BACKOFF_CAP);
+    reconnectAttempts++;
+
+    if (reconnectAttempts > MAX_ATTEMPTS) {
+      log.error("❌ Max reconnect attempts reached");
+      process.exit(1);
+    }
+
+    log.info(`🔄 Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts}/${MAX_ATTEMPTS}) [${reason}]`);
+
+    reconnectTimer = setTimeout(async () => {
+      reconnectTimer = null;
+      await connectToWhatsApp();
+    }, delay);
+  }
+
+  // ===========================================================================
+  // BAILEYS CONNECTION (Bot-1 pattern)
+  // ===========================================================================
+
+  async function connectToWhatsApp() {
+
+     if (isConnecting) {
+    log.warn("⚠️ connectToWhatsApp already in progress, skipping");
+    return;
+  }
+  isConnecting = true;
+
+    if (sock) {
+      destroySocket("reconnect - destroying old socket");
+    }
+
+    try {
+      // STABILITY FIX: Load auth ONCE
+      if (!authState) {
+        log.info("🔐 Loading auth state (ONCE per process)...");
+        const { state, saveCreds: saveCredsFunc } = await useMultiFileAuthState(authDir);
+        authState = state;
+        saveCreds = saveCredsFunc;
+        log.info("✅ Auth state loaded and locked in closure");
       }
 
-      // Connection opened
-      if (connection === "open") {
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.log("✅ CONNECTION ESTABLISHED");
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
-        latestQR = null;
-        qrExpiryTime = null;
-        reconnectAttempts = 0; // Reset backoff on successful connection
+      const { version } = await fetchLatestBaileysVersion();
+      log.info(`📦 Baileys version: ${version.join(".")}`);
 
-        // Clear core dedup cache on reconnect
-        processedMessages.clear();
+      const baileysLogger = pino({
+        level: "warn",
+        hooks: {
+          logMethod(inputArgs, method) {
+            const msg = inputArgs[0];
+            if (
+              typeof msg === "string" &&
+              (msg.includes("closing session") ||
+                msg.includes("decrypt") ||
+                msg.includes("bad mac") ||
+                msg.includes("failed to decrypt"))
+            ) {
+              return;
+            }
+            method.apply(this, inputArgs);
+          },
+        },
+      });
 
-        // Reset router state to align with new socket lifecycle
-        resetRouterState();
+      sock = makeWASocket({
+        version,
+        auth: {
+          creds: authState.creds,
+          keys: makeCacheableSignalKeyStore(authState.keys, baileysLogger),
+        },
+        logger: baileysLogger,
+        printQRInTerminal: true,
+        browser: ["Taxi Bot", "Chrome", "120.0"],
+        markOnlineOnConnect: false,
+        syncFullHistory: false,
+        getMessage: async () => undefined,
+        defaultQueryTimeoutMs: 60000,
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 30000,
+      });
 
-        // DO NOT enable message processing immediately
-        // Start stabilization window for Signal handshake
-        sessionStabilized = false;
-        startSessionStabilization();
-      }
+      log.info("✅ Socket created");
 
-      // Connection closed
-      if (connection === "close") {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      // =======================================================================
+      // CREDS.UPDATE
+      // =======================================================================
 
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.log(`⚠️ CONNECTION CLOSED - Code: ${statusCode}`);
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      sock.ev.on("creds.update", async () => {
+        if (saveCreds) {
+          await saveCreds();
+        }
+      });
 
-        // Destroy current socket
-        destroySocket("connection closed");
+      // =======================================================================
+      // CONNECTION.UPDATE (Bot-1 pattern)
+      // =======================================================================
 
-        if (statusCode === DisconnectReason.loggedOut) {
-          console.log("🔐 Logged out - auth preserved, waiting for manual intervention");
-          
-          latestQR = null;
-          qrExpiryTime = null;
-          
-          // Hard stop - DO NOT delete auth files, require manual restart
-          console.log("🛑 Process stopped - delete auth manually if needed, then restart");
-          process.exit(0);
-        } else if (shouldReconnect) {
-          // Determine reconnect strategy based on error type
+      sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          log.info("📱 QR Code generated");
+        }
+
+        if (connection === "open") {
+          log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+          log.info("✅ CONNECTION ESTABLISHED");
+          log.info(`📱 Connected as: ${sock.user?.id || "unknown"}`);
+          log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+          reconnectAttempts = 0;
+          lastReconnectTime = Date.now();
+          needsSettlingDelay = true;
+
+          if (!botFullyOperational) {
+            botFullyOperational = true;
+            log.info("🎉 BOT FULLY OPERATIONAL");
+            log.info(`   📍 Source groups:  ${config.sourceGroupIds.length}`);
+            log.info(`   🎯 Pipelines:      ${config.pipelines.length}`);
+            config.pipelines.forEach(p => {
+              log.info(`      • ${p.name}: ${p.cityScope.join(', ')}`);
+            });
+          }
+        }
+
+        if (connection === "close") {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
           const errorMsg = lastDisconnect?.error?.message || "";
-          
-          // Crypto/Signal errors need longer backoff
+
+          log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+          log.info(`⚠️ CONNECTION CLOSED`);
+          log.info(`   Status: ${statusCode || "undefined"}`);
+          log.info(`   Error: ${errorMsg || "none"}`);
+          log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+          destroySocket("connection closed");
+
+          if (statusCode === DisconnectReason.loggedOut) {
+            log.error("❌ LOGGED OUT - delete baileys_auth/ and restart");
+            process.exit(1);
+          }
+
+          // Crypto error detection
           if (
             errorMsg.includes("Bad MAC") ||
             errorMsg.includes("prekey") ||
             errorMsg.includes("Decryption error") ||
-            statusCode === 440 // Connection lost
+            statusCode === 440
           ) {
-            console.log("⚠️ Signal/crypto error detected - using extended backoff");
-            reconnectAttempts = Math.max(reconnectAttempts, 3); // Force longer delay
+            log.warn("⚠️ Crypto error - applying extended backoff");
+            reconnectAttempts = Math.max(reconnectAttempts, 2);
           }
 
+          stats.reconnectCount++;
           scheduleReconnect(`statusCode=${statusCode}`);
-        } else {
-          console.log("🛑 Reconnect not allowed, stopping");
-          process.exit(0);
         }
-      }
-    });
+      });
 
-    // ========================================================================
-    // CREDENTIALS UPDATE
-    // ========================================================================
+      // =======================================================================
+      // MESSAGES.UPSERT
+      // =======================================================================
 
-    sock.ev.on("creds.update", async () => {
-      if (saveCreds) {
-        await saveCreds();
-      }
-    });
+      sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type !== "notify") return;
 
-    // ========================================================================
-    // MESSAGE HANDLER - WITH SESSION STABILIZATION GATE
-    // ========================================================================
-
-    sock.ev.on("messages.upsert", async ({ messages, type }) => {
-      // CRITICAL: Wait for session stabilization
-      if (!sessionStabilized) {
-        // Silent drop during stabilization window
-        return;
-      }
-
-      if (type !== "notify") return;
-
-      for (const m of messages) {
-        try {
-          // Skip if no message content
-          if (!m.message) continue;
-
-          const messageType = Object.keys(m.message)[0];
-
-          // SIGNAL PROTOCOL MESSAGE BYPASS - DO NOT PROCESS THESE
-          if (
-            messageType === "protocolMessage" ||
-            messageType === "senderKeyDistributionMessage" ||
-            messageType === "reactionMessage" ||
-            !m.message.conversation && !m.message.extendedTextMessage
-          ) {
-            continue;
-          }
-
-          // Only process group messages
-          if (!m.key.remoteJid?.endsWith("@g.us")) continue;
-
-          // Skip own messages
-          if (m.key.fromMe) continue;
-
-          const messageContent =
-            m.message.conversation ||
-            m.message.extendedTextMessage?.text ||
-            "";
-
-          if (!messageContent) continue;
-
-          // DEDUPLICATION - TEXT MESSAGES ONLY (Signal messages already bypassed)
-          // Stable key format: <remoteJid>-<messageId>
-          const messageKey = `${m.key.remoteJid}-${m.key.id}`;
-          
-          if (processedMessages.has(messageKey)) {
-            continue;
-          }
-
-          processedMessages.set(messageKey, Date.now());
-
-          // Extract sender info
-          const senderJid = m.key.participant || m.key.remoteJid;
-          const senderNumber = senderJid.split("@")[0];
-
-          console.log("\n" + "=".repeat(60));
-          console.log(`📨 Message from: ${senderNumber}`);
-          console.log(`📍 Group: ${m.key.remoteJid}`);
-          console.log(`💬 Content: ${messageContent.substring(0, 100)}...`);
-          console.log("=".repeat(60));
-
-          // Route to processing pipeline
-          await processMessage(sock, m, CONFIG);
-
-        } catch (error) {
-          console.error("❌ Error processing message:", error);
-          
-          // If error is crypto-related, log but don't crash
-          if (
-            error.message?.includes("Decryption error") ||
-            error.message?.includes("Bad MAC")
-          ) {
-            console.error("⚠️ Crypto error in message processing - may need reconnect");
+        for (const msg of messages) {
+          try {
+            await handleMessage(msg);
+          } catch (err) {
+            log.error(`❌ Error handling message: ${err.message}`);
           }
         }
-      }
-    });
+      });
 
-  } catch (error) {
-    console.error("❌ Fatal connection error:", error);
-    
-    // Destroy socket on fatal error
-    destroySocket("fatal error");
-    
-    // Schedule reconnect with backoff
-    scheduleReconnect("fatal error");
+    } catch (err) {
+    log.error(`❌ Connection error: ${err.message}`);
+    scheduleReconnect("connection error");
   } finally {
-    socketCreationInProgress = false;
+    isConnecting = false;
   }
-}
-
-// ============================================================================
-// GRACEFUL SHUTDOWN
-// ============================================================================
-
-async function gracefulShutdown(signal) {
-  console.log(`\n🛑 Received ${signal} - shutting down gracefully...`);
-  
-  isShuttingDown = true;
-
-  // Clear reconnect timer
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
   }
 
-  // Clear stabilization timer
-  if (stabilizationTimer) {
-    clearTimeout(stabilizationTimer);
-    stabilizationTimer = null;
-  }
+  // ===========================================================================
+  // STATS SERVER
+  // ===========================================================================
 
-  // Destroy socket
-  destroySocket("shutdown");
+  function startStatsServer() {
+    const statsPort = parseInt(process.env.STATS_PORT || process.env.QR_SERVER_PORT || "3001", 10);
+    const app = express();
 
-  // Close QR server
-  try {
-    qrServer.close(() => {
-      console.log("🔌 QR server closed");
+    app.get("/ping", (_, res) => res.send("ALIVE"));
+
+    app.get("/stats", (_, res) => {
+      res.json({
+        bot: {
+          name: process.env.BOT_NAME || "unknown",
+          phone: config.botPhone || "unknown",
+        },
+        uptime: ((Date.now() - BOT_START_TIME) / 1000 / 60).toFixed(1) + " minutes",
+        operational: botFullyOperational,
+        stats,
+        cache: {
+          fingerprintSet: fingerprintSet.size,
+          replayIdSet: replayIdSet.size,
+          dirty: fingerprintDirty,
+        },
+        reconnect: {
+          lastReconnectTime: lastReconnectTime ? new Date(lastReconnectTime).toISOString() : null,
+          totalReconnects: stats.reconnectCount,
+        },
+      });
     });
-  } catch (err) {
-    console.error("⚠️ Failed to close QR server:", err.message);
+
+    app.listen(statsPort, "0.0.0.0", () => {
+      log.info(`📊 Stats server: http://0.0.0.0:${statsPort}/stats`);
+    });
   }
 
-  console.log("✅ Graceful shutdown complete");
-  process.exit(0);
+  // ===========================================================================
+  // GRACEFUL SHUTDOWN (Bot-1 pattern)
+  // ===========================================================================
+
+  async function gracefulShutdown(signal) {
+    log.info(`👋 ${signal} received - shutting down gracefully`);
+    isShuttingDown = true;
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (saveDebounceTimer) {
+      clearTimeout(saveDebounceTimer);
+      saveDebounceTimer = null;
+    }
+
+    saveFingerprints();
+    destroySocket("shutdown");
+
+    log.info("✅ Graceful shutdown complete");
+    process.exit(0);
+  }
+
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGHUP", () => gracefulShutdown("SIGHUP"));
+
+  // ===========================================================================
+  // BOOT SEQUENCE
+  // ===========================================================================
+
+  log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  log.info("🚀 TAXI BOT STARTING");
+  log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+  loadFingerprints();
+  startStatsServer();
+  await connectToWhatsApp();
 }
-
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
-// ============================================================================
-// STARTUP SEQUENCE
-// ============================================================================
-
-(async () => {
-  try {
-    // Load auth state ONCE
-    await initializeAuthState();
-
-    // Connect
-    await connectToWhatsApp();
-  } catch (error) {
-    console.error("❌ Startup failed:", error);
-    process.exit(1);
-  }
-})();
