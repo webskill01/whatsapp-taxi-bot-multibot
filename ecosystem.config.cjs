@@ -37,6 +37,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         NODE_OPTIONS: "--max-old-space-size=480",
+        TZ: "Asia/Kolkata",
       },
     },
 
@@ -64,8 +65,8 @@ module.exports = {
 
       // ✅ Logging (FIXED - was using bot-delhi paths)
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      error_file: "./logs/bot-sachin-error.log",  // ← FIXED
-      out_file: "./logs/bot-sachin-out.log",      // ← FIXED
+      error_file: "./logs/bot-sachin-error.log", // ← FIXED
+      out_file: "./logs/bot-sachin-out.log", // ← FIXED
       merge_logs: true,
       log_type: "raw",
 
@@ -77,6 +78,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         NODE_OPTIONS: "--max-old-space-size=480",
+        TZ: "Asia/Kolkata",
       },
     },
 
@@ -104,8 +106,8 @@ module.exports = {
 
       // ✅ Logging (FIXED - was using bot-delhi paths)
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      error_file: "./logs/bot-manny-error.log",  // ← FIXED
-      out_file: "./logs/bot-manny-out.log",      // ← FIXED
+      error_file: "./logs/bot-manny-error.log", // ← FIXED
+      out_file: "./logs/bot-manny-out.log", // ← FIXED
       merge_logs: true,
       log_type: "raw",
 
@@ -117,6 +119,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         NODE_OPTIONS: "--max-old-space-size=480",
+        TZ: "Asia/Kolkata",
       },
     },
 

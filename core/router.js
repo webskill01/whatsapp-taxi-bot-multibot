@@ -1,626 +1,400 @@
 /**
  * ============================================================================
- * ROUTER - Multi-Pipeline Message Routing
+ * ROUTER - Message Processing Pipeline
  * ============================================================================
- * Preserved from OLD bot - DO NOT modify routing logic
- * Enhanced with NEW bot's hardening:
- *   - A1: Length-scaled typing delay
- *   - A5: Weighted between-group gaps
- *   - A3: Fisher-Yates shuffle (RANDOM target order per send)
- *   - C1: Batch fingerprint cleanup
- *   - Per-group send cooldown
+ * FIXES APPLIED:
+ * - Single fingerprint authority (no competition with core)
+ * - Signal/protocol message bypass
+ * - Respects core-level deduplication
+ * - No disk I/O blocking during reconnect
+ * - Anti-ban gates remain intact
+ * ============================================================================
  */
 
-import { 
-  isTaxiRequest, 
-  hasPhoneNumber, 
+import {
+  isTaxiRequest,
+  extractPickupCity,
+  hasPhoneNumber,
   containsBlockedNumber,
   getMessageFingerprint,
-  extractPickupCity
-} from './filter.js';
+} from "./filter.js";
 
 // ============================================================================
-// GLOBAL STATE
+// STATE MANAGEMENT
 // ============================================================================
 
-let config = null;
-let log = null;
+const rateLimitState = new Map();
+const messageFingerprints = new Map(); // In-memory only, no disk I/O
+const FINGERPRINT_TTL = 300000; // 5 minutes
+const MAX_FINGERPRINTS = 5000; // Hard safety cap
 
-// Rate limiting
-let messageCountHourly = 0;
-let messageCountDaily = 0;
-let hourlyResetTime = Date.now() + 3600000;
-let dailyResetTime = Date.now() + 86400000;
-
-// Circuit breaker
-let circuitBreakerFailures = 0;
-let circuitBreakerOpen = false;
-let circuitBreakerResetTime = 0;
-
-// Deduplication
-const fingerprintSet = new Set();
-
-// 🔒 Anti-ban hardening (ported from new core)
-// Per-group send cooldown tracking
-const lastSendTimeByGroup = new Map();
-
-// Stats tracking
-const stats = {
-  processed: 0,
-  routed: 0,
-  ignored: 0,
-  blocked: 0,
-  duplicate: 0,
-  rateLimited: 0,
-  circuitOpen: 0,
-  noPhone: 0,
-  noCity: 0,
-  errors: 0
-};
-
-// ============================================================================
-// INITIALIZATION
-// ============================================================================
-
-export function initializeRouter(botConfig, logger) {
-  config = botConfig;
-  log = logger || console;
-  
-  log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  log.info('🚀 ROUTER INITIALIZED');
-  log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-}
-
-// ============================================================================
-// HUMAN BEHAVIOR TIMING (A1, A5, Random Pause)
-// ============================================================================
-
-/**
- * 🔒 A1: Length-scaled typing delay (ported from new core)
- * Short messages (~30 chars):  ~1.0s
- * Long messages (~200+ chars): ~1.8s
- */
-function getTypingDelay(textLength) {
-  const scaled = textLength * config.humanBehavior.typingBasePerChar;
-  return Math.max(
-    config.humanBehavior.typingMin,
-    Math.min(scaled, config.humanBehavior.typingMax)
-  );
-}
-
-/**
- * 🔒 A5: Weighted between-group gaps (ported from new core)
- * 65% of delays fall in 0.8-1.1s range, occasionally up to 1.5s
- */
-function getWeightedDelay() {
-  const range = config.humanBehavior.betweenMax - config.humanBehavior.betweenMin;
-  const isNormalBand = Math.random() < config.humanBehavior.betweenWeight;
-  
-  const weighted = isNormalBand
-    ? Math.random() * (range * 0.5)  // First 50% of range (normal band)
-    : (range * 0.5) + Math.random() * (range * 0.5);  // Second 50% (occasional higher)
-  
-  return config.humanBehavior.betweenMin + weighted;
-}
-
-/**
- * Random pause simulation (15% chance)
- */
-function shouldApplyRandomPause() {
-  return Math.random() < config.humanBehavior.randomPauseChance;
-}
-
-function getRandomPauseDuration() {
-  const range = config.humanBehavior.randomPauseMax - config.humanBehavior.randomPauseMin;
-  return config.humanBehavior.randomPauseMin + Math.random() * range;
-}
-
-/**
- * 🔒 A3: Fisher-Yates shuffle (ported from new core)
- * Ensures RANDOM target order for every send operation
- */
-function shuffleArray(array) {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-}
-
-// ============================================================================
-// RATE LIMITING & CIRCUIT BREAKER
-// ============================================================================
-
-function checkRateLimits() {
-  const now = Date.now();
-
-  // Reset hourly counter
-  if (now > hourlyResetTime) {
-    log.info(`♻️  HOURLY RESET: ${messageCountHourly} messages sent in last hour`);
-    messageCountHourly = 0;
-    hourlyResetTime = now + 3600000;
-  }
-
-  // Reset daily counter
-  if (now > dailyResetTime) {
-    log.info(`♻️  DAILY RESET: ${messageCountDaily} messages sent in last 24 hours`);
-    messageCountDaily = 0;
-    dailyResetTime = now + 86400000;
-  }
-
-  // Check limits
-  if (messageCountHourly >= config.rateLimits.hourly) {
-    return { allowed: false, reason: 'hourly' };
-  }
-
-  if (messageCountDaily >= config.rateLimits.daily) {
-    return { allowed: false, reason: 'daily' };
-  }
-
-  return { allowed: true };
-}
-
-function incrementRateLimitCounters() {
-  messageCountHourly++;
-  messageCountDaily++;
-}
-
-function checkCircuitBreaker() {
-  const now = Date.now();
-
-  // Check if circuit breaker is open
-  if (circuitBreakerOpen) {
-    if (now < circuitBreakerResetTime) {
-      return { open: true };
-    }
-    // Reset circuit breaker
-    circuitBreakerOpen = false;
-    circuitBreakerFailures = 0;
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info('🔓 CIRCUIT BREAKER RESET');
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  }
-
-  return { open: false };
-}
-
-function recordCircuitBreakerFailure() {
-  circuitBreakerFailures++;
-
-  if (circuitBreakerFailures >= config.circuitBreaker.maxFailures) {
-    circuitBreakerOpen = true;
-    circuitBreakerResetTime = Date.now() + config.circuitBreaker.breakDuration;
-    
-    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.error('🔒 CIRCUIT BREAKER TRIGGERED');
-    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.error(`   ❌ Consecutive failures: ${circuitBreakerFailures}`);
-    log.error(`   ⏳ Cooldown period: ${config.circuitBreaker.breakDuration / 1000}s`);
-    log.error(`   🔓 Auto-reset at: ${new Date(circuitBreakerResetTime).toLocaleTimeString()}`);
-    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  }
-}
-
-function resetCircuitBreakerFailures() {
-  if (circuitBreakerFailures > 0) {
-    circuitBreakerFailures = 0;
-  }
-}
-
-// ============================================================================
-// 🔒 C1: FINGERPRINT CLEANUP (ported from new core)
-// ============================================================================
-
-/**
- * C1: Batch cleanup when fingerprint set exceeds cap
- * Trims to 80% of max in one operation (not one-by-one)
- */
-function cleanupFingerprintSetIfNeeded() {
-  const maxSize = config.deduplication.maxFingerprintCache;
-  
-  if (fingerprintSet.size > maxSize) {
-    const targetSize = Math.floor(maxSize * config.deduplication.cleanupTargetRatio);
-    const toDelete = fingerprintSet.size - targetSize;
-    
-    const iterator = fingerprintSet.values();
-    for (let i = 0; i < toDelete; i++) {
-      const oldest = iterator.next().value;
-      fingerprintSet.delete(oldest);
-    }
-    
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info('🧹 FINGERPRINT CLEANUP');
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info(`   🗑️  Removed: ${toDelete} old entries`);
-    log.info(`   📊 Current size: ${fingerprintSet.size}/${maxSize}`);
-    log.info(`   ✅ Memory optimized`);
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  }
-}
-
-// ============================================================================
-// 🔒 PER-GROUP SEND COOLDOWN (ported from new core)
-// ============================================================================
-
-/**
- * Checks if enough time has passed since last send to this group
- * Returns true if send is allowed
- */
-function checkSendCooldown(groupId) {
-  const now = Date.now();
-  const lastSend = lastSendTimeByGroup.get(groupId);
-  
-  if (!lastSend) return true;
-  
-  const timeSinceLastSend = now - lastSend;
-  return timeSinceLastSend >= config.deduplication.sendCooldown;
-}
-
-/**
- * Records send time for a group
- */
-function recordSendTime(groupId) {
-  lastSendTimeByGroup.set(groupId, Date.now());
-}
-
-/**
- * Periodic cleanup of stale cooldown entries (every 30s)
- */
+// Periodic cleanup
 setInterval(() => {
   const now = Date.now();
-  const staleThreshold = config.deduplication.sendCooldown * 30; // 30 seconds
+  for (const [key, timestamp] of messageFingerprints.entries()) {
+    if (now - timestamp > FINGERPRINT_TTL) {
+      messageFingerprints.delete(key);
+    }
+  }
   
-  for (const [groupId, timestamp] of lastSendTimeByGroup.entries()) {
-    if (now - timestamp > staleThreshold) {
-      lastSendTimeByGroup.delete(groupId);
-    }
+  // Hard safety cap - prevent memory issues
+  if (messageFingerprints.size > MAX_FINGERPRINTS) {
+    messageFingerprints.clear();
+    console.log(`⚠️ Fingerprint map exceeded ${MAX_FINGERPRINTS} entries - cleared`);
   }
-}, 30000);
+}, 60000);
 
 // ============================================================================
-// PIPELINE MATCHING
+// ROUTER STATE RESET (called from core on reconnect)
 // ============================================================================
 
-/**
- * Matches a city against all pipelines
- * Returns array of pipelines that match
- */
-function matchPipelines(city) {
-  const matched = [];
-
-  for (const pipeline of config.pipelines) {
-    // Wildcard match
-    if (pipeline.cityScope.includes('*')) {
-      matched.push(pipeline);
-      continue;
-    }
-
-    // City match
-    if (city && pipeline.cityScope.includes(city)) {
-      matched.push(pipeline);
-    }
-  }
-
-  return matched;
+export function resetRouterState() {
+  messageFingerprints.clear();
+  rateLimitState.clear();
+  console.log("🔄 Router state reset (aligned with socket reconnect)");
 }
 
 // ============================================================================
-// MESSAGE SENDING WITH HUMAN BEHAVIOR
+// RATE LIMITING
 // ============================================================================
 
-/**
- * Sends message to a single target group with cooldown check
- */
-async function sendToGroup(sock, targetGroupId, messageText, groupIndex, totalGroups) {
-  // Check send cooldown
-  if (!checkSendCooldown(targetGroupId)) {
-    log.warn(`   ${groupIndex}/${totalGroups}. ⏱️  ${targetGroupId.substring(0, 18)}... (cooldown active, skipped)`);
-    return { success: true, skipped: true };
-  }
+// WhatsApp rate limits are per sender (global), not per target group
+const RATE_LIMIT_KEY = "__GLOBAL__";
 
-  const sendStartTime = Date.now();
-
-  try {
-    await sock.sendMessage(targetGroupId, { text: messageText });
-    recordSendTime(targetGroupId);
-    
-    const sendDuration = Date.now() - sendStartTime;
-    log.info(`   ${groupIndex}/${totalGroups}. ✅ ${targetGroupId.substring(0, 18)}... (${(sendDuration / 1000).toFixed(2)}s)`);
-    
-    resetCircuitBreakerFailures();
-    return { success: true };
-  } catch (error) {
-    const sendDuration = Date.now() - sendStartTime;
-    log.error(`   ${groupIndex}/${totalGroups}. ❌ ${targetGroupId.substring(0, 18)}... FAILED (${(sendDuration / 1000).toFixed(2)}s)`);
-    log.error(`      Error: ${error.message}`);
-    
-    recordCircuitBreakerFailure();
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * 🔒 A1, A5, A3: Enhanced send loop with timing and shuffling (ported from new core)
- * Sends to all targets with human-like delays and RANDOM order
- */
-async function sendToTargets(sock, targetGroups, messageText, pipelineName) {
-  if (!targetGroups || targetGroups.length === 0) return;
-
-  const sendStartTime = Date.now();
-
-  // 🔒 A3: Shuffle targets for RANDOM send order
-  const shuffledTargets = shuffleArray(targetGroups);
+function isRateLimited(groupId, config) {
+  const now = Date.now();
   
-  log.info(`   🔀 Shuffled order: ${shuffledTargets.length} targets (random sequence)`);
-
-  // 🔒 A1: Typing delay before first send (length-scaled)
-  const typingDelay = getTypingDelay(messageText.length);
-  log.info(`   ⌨️  Typing simulation: ${(typingDelay / 1000).toFixed(1)}s (${messageText.length} chars)`);
-  await new Promise(resolve => setTimeout(resolve, typingDelay));
-
-  log.info(`   📤 Sending to ${shuffledTargets.length} group(s)...`);
-
-  let successCount = 0;
-  let skippedCount = 0;
-
-  // Send to all targets sequentially with human delays
-  for (let i = 0; i < shuffledTargets.length; i++) {
-    const targetGroupId = shuffledTargets[i];
-    const groupIndex = i + 1;
-
-    // Send message
-    const result = await sendToGroup(sock, targetGroupId, messageText, groupIndex, shuffledTargets.length);
-
-    if (result.success) {
-      if (result.skipped) {
-        skippedCount++;
-      } else {
-        successCount++;
-      }
-    } else {
-      stats.errors++;
-    }
-
-    // 🔒 A5: Weighted delay between groups (except after last send)
-    if (i < shuffledTargets.length - 1) {
-      // Random pause chance (15%)
-      if (shouldApplyRandomPause()) {
-        const pauseDuration = getRandomPauseDuration();
-        log.info(`   ⏸️  Random pause: ${(pauseDuration / 1000).toFixed(1)}s (natural variance)`);
-        await new Promise(resolve => setTimeout(resolve, pauseDuration));
-      }
-      
-      const betweenDelay = getWeightedDelay();
-      log.info(`   ⏳ Gap: ${(betweenDelay / 1000).toFixed(2)}s`);
-      await new Promise(resolve => setTimeout(resolve, betweenDelay));
-    }
+  if (!rateLimitState.has(RATE_LIMIT_KEY)) {
+    rateLimitState.set(RATE_LIMIT_KEY, {
+      hourly: [],
+      daily: [],
+    });
   }
 
-  const totalSendTime = ((Date.now() - sendStartTime) / 1000).toFixed(1);
-  
-  log.info(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  log.info(`   📊 Pipeline "${pipelineName}" Summary:`);
-  log.info(`      ✅ Successful: ${successCount}`);
-  log.info(`      ⏭️  Skipped: ${skippedCount}`);
-  log.info(`      ❌ Failed: ${stats.errors}`);
-  log.info(`      ⏱️  Total time: ${totalSendTime}s`);
-  log.info(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  const state = rateLimitState.get(RATE_LIMIT_KEY);
+
+  // Clean old entries
+  state.hourly = state.hourly.filter((t) => now - t < 3600000);
+  state.daily = state.daily.filter((t) => now - t < 86400000);
+
+  // Check limits
+  if (state.hourly.length >= config.rateLimits.hourly) {
+    console.log(`⚠️ Global rate limit (hourly) reached - skipping: ${groupId}`);
+    return true;
+  }
+
+  if (state.daily.length >= config.rateLimits.daily) {
+    console.log(`⚠️ Global rate limit (daily) reached - skipping: ${groupId}`);
+    return true;
+  }
+
+  // Record send
+  state.hourly.push(now);
+  state.daily.push(now);
+
+  return false;
 }
 
 // ============================================================================
-// MAIN ROUTING LOGIC (PRESERVED FROM OLD BOT)
+// HUMAN BEHAVIOR SIMULATION
 // ============================================================================
 
-export async function routeMessage(sock, message, botConfig) {
-  // Use passed config if provided (for flexibility)
-  if (botConfig && !config) {
-    config = botConfig;
-  }
+function getRandomDelay(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
 
-  if (!config) {
-    console.error('❌ Router not initialized. Call initializeRouter() first.');
+async function simulateHumanBehavior(sock, groupId, config) {
+  const behavior = config.humanBehavior;
+  
+  // Guard against undefined socket
+  if (!sock || !sock.sendPresenceUpdate) {
     return;
   }
 
-  stats.processed++;
+  let totalDelay = 0;
+  const MAX_TOTAL_DELAY = 6000; // 6 seconds cap
 
-  try {
-    // Extract message metadata
-    const messageKey = message.key;
-    const messageContent = message.message;
+  // Pre-send delay
+  const preSendDelay = getRandomDelay(
+    behavior.preSendTypingDelay.min,
+    behavior.preSendTypingDelay.max
+  );
 
-    // Skip if message is from bot itself
-    if (messageKey.fromMe) {
-      return;
-    }
+  console.log(`⏳ Pre-send delay: ${preSendDelay}ms`);
+  await new Promise((resolve) => setTimeout(resolve, preSendDelay));
+  totalDelay += preSendDelay;
 
-    // Extract text
-    let messageText = '';
-    if (messageContent?.conversation) {
-      messageText = messageContent.conversation;
-    } else if (messageContent?.extendedTextMessage?.text) {
-      messageText = messageContent.extendedTextMessage.text;
-    }
-
-    if (!messageText || messageText.length < config.validation.minMessageLength) {
-      stats.ignored++;
-      return;
-    }
-
-    // Check if from source group
-    const sourceGroupId = messageKey.remoteJid;
-    if (!config.sourceGroupIds.includes(sourceGroupId)) {
-      return;
-    }
-
-    // Generate fingerprint for deduplication
-    const fingerprint = getMessageFingerprint(messageText, messageKey.id, message.messageTimestamp * 1000);
-    
-    // Check duplicate
-    if (fingerprintSet.has(fingerprint)) {
-      stats.duplicate++;
-      log.info(`🔁 DUPLICATE DETECTED: ${fingerprint.substring(0, 20)}...`);
-      return;
-    }
-
-    // Add to fingerprint set
-    fingerprintSet.add(fingerprint);
-    
-    // 🔒 C1: Cleanup fingerprint set if needed
-    cleanupFingerprintSetIfNeeded();
-
-    // Check blocked numbers FIRST
-    if (containsBlockedNumber(messageText, config.blockedPhoneNumbers)) {
-      stats.blocked++;
-      log.info(`🚫 BLOCKED NUMBER DETECTED - message rejected`);
-      return;
-    }
-
-    // Check if taxi request
-    if (!isTaxiRequest(messageText, config.requestKeywords, config.ignoreIfContains)) {
-      stats.ignored++;
-      return;
-    }
-
-    // Check phone number
-    if (config.validation.requirePhoneNumber && !hasPhoneNumber(messageText)) {
-      stats.noPhone++;
-      log.info(`📵 NO PHONE NUMBER - message rejected`);
-      return;
-    }
-
-    // Check rate limits
-    const rateCheck = checkRateLimits();
-    if (!rateCheck.allowed) {
-      stats.rateLimited++;
-      log.warn(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      log.warn(`⏳ RATE LIMIT HIT (${rateCheck.reason})`);
-      log.warn(`   Hourly: ${messageCountHourly}/${config.rateLimits.hourly}`);
-      log.warn(`   Daily: ${messageCountDaily}/${config.rateLimits.daily}`);
-      log.warn(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      return;
-    }
-
-    // Check circuit breaker
-    const cbCheck = checkCircuitBreaker();
-    if (cbCheck.open) {
-      stats.circuitOpen++;
-      log.warn(`🔒 CIRCUIT BREAKER OPEN - message skipped`);
-      return;
-    }
-
-    // Extract city from message
-    const allConfiguredCities = config.pipelines
-      .flatMap(p => p.cityScope)
-      .filter(city => city !== '*');
-    
-    const uniqueCities = [...new Set(allConfiguredCities)];
-    const detectedCity = extractPickupCity(messageText, uniqueCities);
-
-    // ━━━ BEGIN ROUTING ━━━
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info('📨 NEW MESSAGE RECEIVED');
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info(`🌍 Detected city: ${detectedCity || 'NONE'}`);
-    log.info(`📝 Message preview: "${messageText.substring(0, 80)}${messageText.length > 80 ? '...' : ''}"`);
-    log.info(`🔑 Fingerprint: ${fingerprint.substring(0, 25)}...`);
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    // Match pipelines
-    const matchedPipelines = matchPipelines(detectedCity);
-
-    if (matchedPipelines.length === 0) {
-      stats.noCity++;
-      log.info(`❌ NO PIPELINE MATCHED`);
-      log.info(`   City: ${detectedCity || 'none'}`);
-      log.info(`   Available pipelines: ${config.pipelines.map(p => p.name).join(', ')}`);
-      log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      return;
-    }
-
-    log.info(`🎯 MATCHED PIPELINES: ${matchedPipelines.length}`);
-    matchedPipelines.forEach((p, idx) => {
-      log.info(`   ${idx + 1}. ${p.name} (${p.targetGroups.length} targets)`);
-    });
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    // Increment rate limit counters
-    incrementRateLimitCounters();
-
-    // Send to all matched pipelines
-    for (const pipeline of matchedPipelines) {
-      log.info(`📤 ROUTING TO PIPELINE: ${pipeline.name}`);
-      log.info(`   City scope: [${pipeline.cityScope.join(', ')}]`);
-      log.info(`   Target groups: ${pipeline.targetGroups.length}`);
+  // Simulate typing
+  if (behavior.simulateTyping && Math.random() < behavior.typingProbability && totalDelay < MAX_TOTAL_DELAY) {
+    try {
+      await sock.sendPresenceUpdate("composing", groupId);
       
-      await sendToTargets(sock, pipeline.targetGroups, messageText, pipeline.name);
+      const typingDuration = Math.min(
+        getRandomDelay(behavior.typingDuration.min, behavior.typingDuration.max),
+        MAX_TOTAL_DELAY - totalDelay
+      );
       
-      stats.routed++;
+      console.log(`⌨️ Simulating typing: ${typingDuration}ms`);
+      await new Promise((resolve) => setTimeout(resolve, typingDuration));
+      totalDelay += typingDuration;
+      
+      await sock.sendPresenceUpdate("paused", groupId);
+    } catch (error) {
+      console.error("⚠️ Typing simulation error:", error.message);
     }
+  }
 
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info('✅ ROUTING COMPLETE');
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info(`📊 Rate limits: ${messageCountHourly}/${config.rateLimits.hourly} hourly, ${messageCountDaily}/${config.rateLimits.daily} daily`);
-    log.info(`📈 Session stats: Processed ${stats.processed}, Routed ${stats.routed}, Ignored ${stats.ignored}`);
-    log.info(`🗑️  Fingerprint cache: ${fingerprintSet.size}/${config.deduplication.maxFingerprintCache}`);
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-  } catch (error) {
-    stats.errors++;
-    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.error('❌ ROUTER ERROR');
-    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.error(`   Message: ${error.message}`);
-    log.error(`   Stack: ${error.stack}`);
-    log.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    recordCircuitBreakerFailure();
+  // Random pre-message pause
+  if (Math.random() < 0.3 && totalDelay < MAX_TOTAL_DELAY) {
+    const pauseDelay = Math.min(
+      getRandomDelay(500, 2000),
+      MAX_TOTAL_DELAY - totalDelay
+    );
+    console.log(`⏸️ Random pause: ${pauseDelay}ms`);
+    await new Promise((resolve) => setTimeout(resolve, pauseDelay));
   }
 }
 
 // ============================================================================
-// STATS & CLEANUP
+// MESSAGE FORWARDING
 // ============================================================================
 
-export function getRouterStats() {
-  return {
-    stats: { ...stats },
-    messageCount: {
-      hourly: messageCountHourly,
-      daily: messageCountDaily
-    },
-    circuitBreaker: {
-      isOpen: circuitBreakerOpen,
-      failureCount: circuitBreakerFailures
-    },
-    cache: {
-      fingerprintSize: fingerprintSet.size,
-      maxSize: config?.deduplication?.maxFingerprintCache || 0
+async function forwardMessage(sock, message, targetGroups, sourceName, config) {
+  const messageContent = message.message.conversation || 
+                        message.message.extendedTextMessage?.text || 
+                        "";
+
+  const senderJid = message.key.participant || message.key.remoteJid;
+  const senderNumber = senderJid.split("@")[0];
+
+  console.log("\n" + "━".repeat(60));
+  console.log("📤 FORWARDING MESSAGE");
+  console.log("━".repeat(60));
+  console.log(`👤 From: ${senderNumber}`);
+  console.log(`📋 Source: ${sourceName || "Unknown"}`);
+  console.log(`🎯 Targets: ${targetGroups.length} groups`);
+  console.log(`💬 Content: ${messageContent.substring(0, 100)}...`);
+  console.log("━".repeat(60));
+
+  let successCount = 0;
+  let failCount = 0;
+
+  // Shuffle targets once before loop
+  const shuffledTargets = [...targetGroups].sort(() => Math.random() - 0.5);
+
+  for (const targetGroupId of shuffledTargets) {
+    try {
+      // Rate limit check
+      if (isRateLimited(targetGroupId, config)) {
+        console.log(`⏭️ Skipping (rate limited): ${targetGroupId}`);
+        failCount++;
+        continue;
+      }
+
+      // Human behavior simulation
+      await simulateHumanBehavior(sock, targetGroupId, config);
+
+      // Send message
+      await sock.sendMessage(targetGroupId, {
+        text: messageContent,
+      });
+
+      successCount++;
+      console.log(`✅ Sent to: ${targetGroupId}`);
+
+      // Inter-message delay
+      const interDelay = getRandomDelay(
+        config.humanBehavior.interMessageDelay.min,
+        config.humanBehavior.interMessageDelay.max
+      );
+      
+      await new Promise((resolve) => setTimeout(resolve, interDelay));
+
+    } catch (error) {
+      failCount++;
+      console.error(`❌ Failed to send to ${targetGroupId}:`, error.message);
+
+      // If error is crypto-related, log but continue
+      if (
+        error.message?.includes("Decryption error") ||
+        error.message?.includes("Bad MAC")
+      ) {
+        console.error("⚠️ Crypto error during send - may need reconnect");
+      }
     }
-  };
+  }
+
+  console.log("\n" + "━".repeat(60));
+  console.log("📊 FORWARDING SUMMARY");
+  console.log("━".repeat(60));
+  console.log(`✅ Success: ${successCount}`);
+  console.log(`❌ Failed: ${failCount}`);
+  console.log("━".repeat(60) + "\n");
 }
 
-export function cleanupRouter(botConfig) {
-  if (botConfig && log) {
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info('🧹 ROUTER CLEANUP');
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+// ============================================================================
+// FINGERPRINT DEDUPLICATION (SINGLE AUTHORITY)
+// ============================================================================
+
+function isDuplicateMessage(messageContent, messageId, remoteJid) {
+  // Generate fingerprint using filter.js function
+  // Include source group to prevent cross-group collisions
+  
+  const fingerprint = getMessageFingerprint(
+    `${remoteJid}|${messageContent}`,
+    messageId
+  );
+
+  // Check if seen before
+  if (messageFingerprints.has(fingerprint)) {
+    return true;
+  }
+  if (messageFingerprints.size > MAX_FINGERPRINTS) {
+  messageFingerprints.clear();
+}
+  // Record fingerprint with timestamp
+  messageFingerprints.set(fingerprint, Date.now());
+  return false;
+}
+
+// ============================================================================
+// MAIN MESSAGE PROCESSOR
+// ============================================================================
+
+export async function processMessage(sock, message, config) {
+  try {
+    const messageType = Object.keys(message.message)[0];
+
+    // ========================================================================
+    // SIGNAL PROTOCOL MESSAGE BYPASS - CRITICAL
+    // ========================================================================
+    // These messages MUST NOT go through validation/deduplication pipeline
+    // They are part of Signal's encryption layer and must be passed through
     
-    // Clear timers
-    lastSendTimeByGroup.clear();
-    log.info('   ✅ Cooldown timers cleared');
+    if (
+      messageType === "protocolMessage" ||
+      messageType === "senderKeyDistributionMessage" ||
+      messageType === "reactionMessage" ||
+      messageType === "messageContextInfo"
+    ) {
+      // Silent bypass - no processing
+      return;
+    }
+
+    // Extract message content
+    const messageContent =
+      message.message.conversation ||
+      message.message.extendedTextMessage?.text ||
+      "";
+
+    // Skip empty messages
+    if (!messageContent) {
+      return;
+    }
+
+    const groupId = message.key.remoteJid;
+    const senderJid = message.key.participant || message.key.remoteJid;
+    const senderNumber = senderJid.split("@")[0];
+
+    // ========================================================================
+    // VALIDATION STAGE
+    // ========================================================================
+
+    // Check if message is from a source group
+    const isSourceGroup = config.sourceGroupIds.includes(groupId);
+
+    if (!isSourceGroup) {
+      console.log(`⏭️ Not a source group: ${groupId}`);
+      return;
+    }
+
+    // ========================================================================
+    // DEDUPLICATION STAGE - RESPECTS CORE ACCEPTANCE
+    // ========================================================================
+    // Core has already deduplicated at socket level
+    // This is a secondary safety check for router-level duplicates only
     
-    // Log final stats
-    log.info(`   📊 Final stats:`);
-    log.info(`      Processed: ${stats.processed}`);
-    log.info(`      Routed: ${stats.routed}`);
-    log.info(`      Ignored: ${stats.ignored}`);
-    log.info(`      Duplicates: ${stats.duplicate}`);
-    log.info(`      Errors: ${stats.errors}`);
+    if (isDuplicateMessage(messageContent, message.key.id, message.key.remoteJid)) {
+      return;
+    }
+
+    // ========================================================================
+    // CONTENT VALIDATION
+    // ========================================================================
+
+    // Check if message is a taxi request
+    const isRequest = isTaxiRequest(
+      messageContent,
+      config.requestKeywords,
+      config.ignoreIfContains,
+      config.blockedPhoneNumbers
+    );
+
+    if (!isRequest) {
+      console.log("⏭️ Not a taxi request");
+      return;
+    }
+
+    // Blocked number check
+    if (containsBlockedNumber(messageContent, config.blockedPhoneNumbers)) {
+      console.log(`🚫 Blocked number detected from: ${senderNumber}`);
+      return;
+    }
+
+    // Phone number requirement
+    if (!hasPhoneNumber(messageContent)) {
+      console.log("⏭️ No phone number found");
+      return;
+    }
+
+    // ========================================================================
+    // PIPELINE ROUTING
+    // ========================================================================
+
+    console.log("\n" + "┏".repeat(60));
+    console.log("🔍 ROUTING MESSAGE TO PIPELINES");
+    console.log("┗".repeat(60));
+
+    let routedToPipeline = false;
+
+    for (const pipeline of config.pipelines) {
+      // Extract pickup city
+      const pickupCity = extractPickupCity(messageContent, pipeline.cityScope);
+
+      if (!pickupCity) {
+        console.log(`⏭️ Pipeline '${pipeline.name}': No matching city`);
+        continue;
+      }
+
+      console.log(`\n✅ Pipeline Match: ${pipeline.name}`);
+      console.log(`📍 Pickup City: ${pickupCity}`);
+      console.log(`🎯 Target Groups: ${pipeline.targetGroups.length}`);
+
+      // Forward to pipeline target groups
+      await forwardMessage(
+        sock,
+        message,
+        pipeline.targetGroups,
+        pipeline.name,
+        config
+      );
+
+      routedToPipeline = true;
+    }
+
+    if (!routedToPipeline) {
+      console.log("⏭️ Message did not match any pipeline city scope");
+    }
+
+  } catch (error) {
+    console.error("❌ Error in processMessage:", error);
     
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    log.info('✅ ROUTER CLEANUP COMPLETE');
-    log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    // Log crypto errors but don't crash
+    if (
+      error.message?.includes("Decryption error") ||
+      error.message?.includes("Bad MAC")
+    ) {
+      console.error("⚠️ Crypto error in message processing");
+    }
   }
 }

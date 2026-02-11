@@ -1,709 +1,642 @@
 /**
  * ============================================================================
- * BAILEYS CONNECTION & MESSAGE HANDLER
+ * WHATSAPP BOT CORE - PRODUCTION FIXED
  * ============================================================================
- * Merged: OLD bot's QR server + NEW bot's anti-ban hardening
- * 
- * 🔒 Anti-ban features:
- *   B1: Reconnect age-gate (10s strict for 30s after reconnect)
- *   B2: Replay ID set (200 rolling message IDs)
- *   C2: Disk-backed fingerprint persistence (debounced 30s writes)
- *   A4: Settling delay (5-15s on first message after connect)
- * 
- * 🛡️ Session stability features:
- *   S1: Session stabilization delay (8s after connect before sends)
- *   S2: Reconnect rate limiter (max 3 per 10 minutes)
+ * FIXES APPLIED:
+ * - Single socket per process with proper teardown
+ * - Auth state loaded ONCE at startup (no re-entry)
+ * - Backoff-based reconnect with crypto error handling
+ * - Session stabilization window before message processing
+ * - Signal message bypass in deduplication
+ * - Graceful shutdown for PM2 safety
+ * - No recursive reconnect
+ * ============================================================================
  */
 
-import makeWASocket, { 
-  DisconnectReason, 
+import makeWASocket, {
+  DisconnectReason,
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore
-} from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import express from 'express';
-import qrcode from 'qrcode-terminal';
-import QRCode from 'qrcode';
-import pino from 'pino';
-import fs from 'fs';
-import path from 'path';
-
-import { routeMessage, getRouterStats, initializeRouter } from './router.js';
-
-// ============================================================================
-// GLOBAL STATE
-// ============================================================================
-
-let sock = null;
-let currentQR = null;
-let isConnected = false;
-let botConfig = null;
-let log = null;
-
-// 🔒 B1: Reconnect age-gate (ported from new core)
-let reconnectStrictUntil = 0;
-const STRICT_AGE_MS = 10000;          // 10s
-const STRICT_WINDOW_DURATION = 30000; // 30s
-
-// 🔒 B2: Replay ID set (ported from new core)
-const replayIdSet = new Set();
-const MAX_REPLAY_IDS = 200;
-
-// 🔒 A4: Settling delay flag (ported from new core)
-let needsSettlingDelay = true;
-
-// 🔒 C2: Disk persistence state (ported from new core)
-let fingerprintDirty = false;
-let fingerprintSaveTimer = null;
-const fingerprintSet = new Set();
-
-// 🛡️ S1: Session stabilization (prevents prekey thrashing)
-let sessionStableAt = 0;
-const SESSION_STABILIZE_MS = 8000; // 8 seconds
-
-// 🛡️ S2: Reconnect rate limiter (prevents WhatsApp prekey spam)
-let reconnects = [];
-const MAX_RECONNECTS = 3;
-const RECONNECT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-
-// Stats
-const stats = {
-  messagesReceived: 0,
-  rejected: {
-    fromMe: 0,
-    oldAfterReconnect: 0,
-    replayDuplicate: 0,
-    tooShort: 0,
-    duplicate: 0,
-    sessionNotStable: 0
-  }
-};
+  Browsers,
+  makeInMemoryStore,
+} from "@whiskeysockets/baileys";
+import NodeCache from "node-cache";
+import pino from "pino";
+import qrcode from "qrcode";
+import path from "path";
+import http from "http";
+import { loadConfig } from "./configLoader.js";
+import { processMessage, resetRouterState } from "./router.js";
 
 // ============================================================================
-// 🛡️ S2: RECONNECT RATE LIMITER
+// GLOBAL STATE - PROCESS LIFETIME SCOPE
 // ============================================================================
 
-/**
- * Checks if reconnect is allowed (max 3 per 10 minutes)
- * WHY: Prevents WhatsApp from spamming prekeys during reconnect storms
- */
-function canReconnect() {
-  const now = Date.now();
-  
-  // Remove reconnects older than 10 minutes
-  reconnects = reconnects.filter(t => now - t < RECONNECT_WINDOW_MS);
-  
-  if (reconnects.length >= MAX_RECONNECTS) {
-    const oldestReconnect = Math.min(...reconnects);
-    const waitTimeMs = RECONNECT_WINDOW_MS - (now - oldestReconnect);
-    const waitMinutes = Math.ceil(waitTimeMs / 60000);
-    
-    log.warn(`⚠️  Reconnect rate limit hit (${reconnects.length}/${MAX_RECONNECTS})`);
-    log.warn(`⏳ Must wait ${waitMinutes} minutes before reconnecting`);
-    
-    return false;
-  }
-  
-  // Record this reconnect attempt
-  reconnects.push(now);
-  return true;
+let activeSocket = null; // Only ONE socket reference allowed
+let authState = null; // Auth loaded ONCE at startup
+let saveCreds = null; // Creds saver loaded ONCE
+let socketCreationInProgress = false; // Serialization guard
+let sessionStabilized = false; // Signal handshake safety flag
+let reconnectAttempts = 0; // Backoff counter
+let isShuttingDown = false; // Graceful shutdown flag
+let reconnectTimer = null; // Timer reference for cleanup
+let stabilizationTimer = null; // Session stabilization timer reference
+
+const MAX_RECONNECT_ATTEMPTS = 5;
+const BASE_RECONNECT_DELAY = 5000; // 5 seconds
+const MAX_RECONNECT_DELAY = 120000; // 2 minutes
+const SESSION_STABILIZATION_DELAY = 15000; // 15 seconds after connection open
+
+// ============================================================================
+// STARTUP
+// ============================================================================
+
+const BOT_DIR = process.argv[2];
+
+if (!BOT_DIR) {
+  console.error("❌ Usage: node index.js <bot-directory>");
+  process.exit(1);
 }
 
-/**
- * Sleeps before reconnect if rate limited
- */
-async function sleepIfRateLimited() {
+const { config: CONFIG, ENV } = loadConfig(BOT_DIR);
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || "silent",
+  transport: {
+    target: "pino-pretty",
+    options: {
+      colorize: false,
+      translateTime: "SYS:standard",
+      ignore: "hostname",
+    },
+  },
+});
+
+// ============================================================================
+// MEMORY STORE
+// ============================================================================
+
+const store = makeInMemoryStore({ logger });
+store?.readFromFile(path.join(ENV.BOT_DIR, "baileys_store.json"));
+
+setInterval(() => {
+  if (!isShuttingDown) {
+    store?.writeToFile(path.join(ENV.BOT_DIR, "baileys_store.json"));
+  }
+}, 120000);
+
+// ============================================================================
+// MESSAGE CACHE & DEDUPLICATION
+// ============================================================================
+
+const msgRetryCounterCache = new NodeCache({ stdTTL: 3600 });
+const processedMessages = new Map(); // Map<string, number> for message deduplication with timestamps
+const MESSAGE_CACHE_TTL = 300000; // 5 minutes
+
+function cleanMessageCache() {
   const now = Date.now();
-  reconnects = reconnects.filter(t => now - t < RECONNECT_WINDOW_MS);
-  
-  if (reconnects.length >= MAX_RECONNECTS) {
-    const oldestReconnect = Math.min(...reconnects);
-    const waitTimeMs = RECONNECT_WINDOW_MS - (now - oldestReconnect);
-    const waitMinutes = Math.ceil(waitTimeMs / 60000);
-    
-    log.warn(`🛑 Reconnect rate limited - sleeping ${waitMinutes} minutes`);
-    await new Promise(resolve => setTimeout(resolve, waitTimeMs));
+  for (const [key, timestamp] of processedMessages.entries()) {
+    if (now - timestamp > MESSAGE_CACHE_TTL) {
+      processedMessages.delete(key);
+    }
   }
 }
 
+setInterval(cleanMessageCache, 60000);
+
 // ============================================================================
-// 🔒 C2: DISK-BACKED FINGERPRINT PERSISTENCE (ported from new core)
+// QR CODE SERVER
 // ============================================================================
 
-/**
- * Loads fingerprints from disk with TTL filtering
- */
-function loadFingerprintsFromDisk(botDir) {
-  const fpFile = path.join(botDir, botConfig.deduplication.fingerprintFile);
+let latestQR = null;
+let qrExpiryTime = null;
+const QR_VALIDITY_MS = 45000;
+
+const qrServer = http.createServer((req, res) => {
+  if (req.url === "/qr") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+
+    if (!latestQR) {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>QR Code - ${ENV.BOT_NAME}</title>
+            <meta http-equiv="refresh" content="3">
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f0f0; }
+              .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
+              h1 { color: #25D366; }
+              .status { color: #666; margin: 20px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>🔄 ${ENV.BOT_NAME}</h1>
+              <p class="status">⏳ Waiting for QR code...</p>
+              <p style="color: #999; font-size: 12px;">Page refreshes automatically</p>
+            </div>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
+    const now = Date.now();
+    const isExpired = qrExpiryTime && now > qrExpiryTime;
+
+    if (isExpired) {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>QR Code - ${ENV.BOT_NAME}</title>
+            <meta http-equiv="refresh" content="3">
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f0f0; }
+              .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
+              h1 { color: #ff9800; }
+              .status { color: #666; margin: 20px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>⏰ ${ENV.BOT_NAME}</h1>
+              <p class="status">QR code expired. Waiting for new code...</p>
+              <p style="color: #999; font-size: 12px;">Page refreshes automatically</p>
+            </div>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
+    const timeLeft = qrExpiryTime ? Math.max(0, Math.floor((qrExpiryTime - now) / 1000)) : 45;
+
+    res.end(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>QR Code - ${ENV.BOT_NAME}</title>
+          <meta http-equiv="refresh" content="5">
+          <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f0f0; }
+            .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
+            h1 { color: #25D366; }
+            img { max-width: 100%; border: 2px solid #25D366; border-radius: 10px; margin: 20px 0; }
+            .timer { font-size: 18px; color: ${timeLeft < 15 ? "#ff5722" : "#666"}; font-weight: bold; }
+            .instructions { color: #666; margin: 20px 0; line-height: 1.6; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>📱 ${ENV.BOT_NAME}</h1>
+            <img src="${latestQR}" alt="WhatsApp QR Code" />
+            <p class="timer">⏱️ Expires in: ${timeLeft}s</p>
+            <div class="instructions">
+              <p><strong>Scan with WhatsApp:</strong></p>
+              <p>1. Open WhatsApp on your phone<br>
+              2. Tap Menu (⋮) → Linked Devices<br>
+              3. Tap "Link a Device"<br>
+              4. Scan this QR code</p>
+            </div>
+            <p style="color: #999; font-size: 12px;">Page refreshes automatically</p>
+          </div>
+        </body>
+      </html>
+    `);
+  } else {
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("404 Not Found");
+  }
+});
+
+qrServer.listen(ENV.QR_SERVER_PORT, () => {
+  console.log(`✅ QR Server: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
+});
+
+// ============================================================================
+// AUTH STATE - LOAD ONCE AT STARTUP
+// ============================================================================
+
+async function initializeAuthState() {
+  console.log("🔐 Loading auth state (ONCE per process)...");
+  const { state, saveCreds: saveCredsFunc } = await useMultiFileAuthState(ENV.AUTH_DIR);
+  authState = state;
+  saveCreds = saveCredsFunc;
+  console.log("✅ Auth state loaded and locked");
+}
+
+// ============================================================================
+// SOCKET TEARDOWN
+// ============================================================================
+
+function destroySocket(reason = "manual") {
+  if (!activeSocket) return;
+
+  console.log(`🔌 Destroying socket: ${reason}`);
+
+  try {
+    activeSocket.ev.removeAllListeners();
+    activeSocket.end(undefined);
+  } catch (err) {
+    console.error("⚠️ Socket destruction error:", err.message);
+  }
+
+  activeSocket = null;
+  sessionStabilized = false;
   
-  if (!fs.existsSync(fpFile)) {
-    log.info('📂 No existing fingerprint file found');
+  // Clear stabilization timer to prevent timer leak
+  if (stabilizationTimer) {
+    clearTimeout(stabilizationTimer);
+    stabilizationTimer = null;
+  }
+  
+  console.log("✅ Socket destroyed and nullified");
+}
+
+// ============================================================================
+// RECONNECT LOGIC WITH BACKOFF
+// ============================================================================
+
+function scheduleReconnect(reason = "unknown") {
+  if (isShuttingDown) {
+    console.log("🛑 Shutdown in progress, no reconnect");
     return;
   }
 
+  if (socketCreationInProgress) {
+    console.log("⏳ Socket creation already in progress, skipping reconnect");
+    return;
+  }
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    console.error(`❌ Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Stopping.`);
+    process.exit(0);
+  }
+
+  reconnectAttempts++;
+
+  const baseDelay = Math.min(
+    BASE_RECONNECT_DELAY * reconnectAttempts,
+    MAX_RECONNECT_DELAY
+  );
+  
+  // Add jitter to prevent pattern detection
+  const delay = baseDelay + Math.floor(Math.random() * 3000);
+
+  console.log(`🔄 Scheduling reconnect #${reconnectAttempts} in ${delay}ms (reason: ${reason})`);
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+  }
+
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    await connectToWhatsApp();
+  }, delay);
+}
+
+// ============================================================================
+// SESSION STABILIZATION WINDOW
+// ============================================================================
+
+function startSessionStabilization() {
+  console.log(`⏳ Session stabilization window: ${SESSION_STABILIZATION_DELAY}ms`);
+  
+  // Clear any existing stabilization timer
+  if (stabilizationTimer) {
+    clearTimeout(stabilizationTimer);
+    stabilizationTimer = null;
+  }
+  
+  stabilizationTimer = setTimeout(() => {
+    if (activeSocket) {
+      sessionStabilized = true;
+      console.log("✅ Session stabilized - message processing enabled");
+    }
+    stabilizationTimer = null;
+  }, SESSION_STABILIZATION_DELAY);
+}
+
+// ============================================================================
+// MAIN CONNECTION FUNCTION
+// ============================================================================
+
+async function connectToWhatsApp() {
+  // Guard against concurrent calls
+  if (socketCreationInProgress) {
+    console.log("⚠️ Socket creation already in progress, aborting");
+    return;
+  }
+
+  if (isShuttingDown) {
+    console.log("🛑 Shutdown in progress, aborting connection");
+    return;
+  }
+
+  socketCreationInProgress = true;
+
   try {
-    const content = fs.readFileSync(fpFile, 'utf8');
-    const entries = JSON.parse(content);
-    
-    if (!Array.isArray(entries)) {
-      log.warn('⚠️  Invalid fingerprint file format');
-      return;
+    // Destroy any existing socket first
+    if (activeSocket) {
+      destroySocket("pre-reconnect cleanup");
     }
 
-    const now = Date.now();
-    const ttl = botConfig.deduplication.fingerprintTTL;
-    let loaded = 0;
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(`🚀 Connecting: ${ENV.BOT_NAME}`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    for (const entry of entries) {
-      if (entry.fp && entry.ts) {
-        const age = now - entry.ts;
-        if (age < ttl) {
-          fingerprintSet.add(entry.fp);
-          loaded++;
+    // Auth state must already be loaded at startup
+    if (!authState || !saveCreds) {
+      throw new Error("Auth state not initialized - this should never happen");
+    }
+
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`📦 Baileys version: ${version} ${isLatest ? "(latest)" : "(outdated)"}`);
+
+    // Create new socket with FRESH Signal store per socket
+    const sock = makeWASocket({
+      version,
+      logger,
+      printQRInTerminal: false,
+      browser: Browsers.macOS("Chrome"),
+      auth: {
+        creds: authState.creds,
+        keys: makeCacheableSignalKeyStore(authState.keys, logger),
+      },
+      msgRetryCounterCache,
+      generateHighQualityLinkPreview: true,
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      getMessage: async (key) => {
+        if (store) {
+          const msg = await store.loadMessage(key.remoteJid, key.id);
+          return msg?.message || undefined;
+        }
+        return undefined;
+      },
+    });
+
+    // Set as active socket
+    activeSocket = sock;
+
+    // Bind store
+    if (store) {
+      store.bind(sock.ev);
+    }
+
+    // ========================================================================
+    // CONNECTION UPDATES
+    // ========================================================================
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      // QR Code handling
+      if (qr) {
+        latestQR = await qrcode.toDataURL(qr);
+        qrExpiryTime = Date.now() + QR_VALIDITY_MS;
+        console.log(`📱 QR Code available at: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
+
+        const qrPath = path.join(ENV.QR_DIR, `qr-${Date.now()}.png`);
+        await qrcode.toFile(qrPath, qr);
+        console.log(`💾 QR saved: ${qrPath}`);
+      }
+
+      // Connection opened
+      if (connection === "open") {
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log("✅ CONNECTION ESTABLISHED");
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        latestQR = null;
+        qrExpiryTime = null;
+        reconnectAttempts = 0; // Reset backoff on successful connection
+
+        // Clear core dedup cache on reconnect
+        processedMessages.clear();
+
+        // Reset router state to align with new socket lifecycle
+        resetRouterState();
+
+        // DO NOT enable message processing immediately
+        // Start stabilization window for Signal handshake
+        sessionStabilized = false;
+        startSessionStabilization();
+      }
+
+      // Connection closed
+      if (connection === "close") {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log(`⚠️ CONNECTION CLOSED - Code: ${statusCode}`);
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        // Destroy current socket
+        destroySocket("connection closed");
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          console.log("🔐 Logged out - auth preserved, waiting for manual intervention");
+          
+          latestQR = null;
+          qrExpiryTime = null;
+          
+          // Hard stop - DO NOT delete auth files, require manual restart
+          console.log("🛑 Process stopped - delete auth manually if needed, then restart");
+          process.exit(0);
+        } else if (shouldReconnect) {
+          // Determine reconnect strategy based on error type
+          const errorMsg = lastDisconnect?.error?.message || "";
+          
+          // Crypto/Signal errors need longer backoff
+          if (
+            errorMsg.includes("Bad MAC") ||
+            errorMsg.includes("prekey") ||
+            errorMsg.includes("Decryption error") ||
+            statusCode === 440 // Connection lost
+          ) {
+            console.log("⚠️ Signal/crypto error detected - using extended backoff");
+            reconnectAttempts = Math.max(reconnectAttempts, 3); // Force longer delay
+          }
+
+          scheduleReconnect(`statusCode=${statusCode}`);
+        } else {
+          console.log("🛑 Reconnect not allowed, stopping");
+          process.exit(0);
         }
       }
-    }
+    });
 
-    log.info(`📥 Loaded ${loaded} fingerprints from disk (${entries.length - loaded} expired)`);
-  } catch (error) {
-    log.error(`❌ Failed to load fingerprints: ${error.message}`);
-  }
-}
+    // ========================================================================
+    // CREDENTIALS UPDATE
+    // ========================================================================
 
-/**
- * Marks fingerprints as dirty (triggers debounced save)
- */
-function markDirty() {
-  fingerprintDirty = true;
-
-  // Clear existing timer
-  if (fingerprintSaveTimer) {
-    clearTimeout(fingerprintSaveTimer);
-  }
-
-  // Debounced save
-  fingerprintSaveTimer = setTimeout(() => {
-    saveFingerprintsToDisk();
-  }, botConfig.deduplication.saveDebounceMs);
-}
-
-/**
- * Saves fingerprints to disk
- */
-function saveFingerprintsToDisk() {
-  if (!fingerprintDirty) return;
-
-  const fpFile = path.join(botConfig.botDir, botConfig.deduplication.fingerprintFile);
-
-  try {
-    const now = Date.now();
-    const entries = [];
-    
-    // Convert Set to array with timestamps
-    for (const fp of fingerprintSet) {
-      entries.push({ fp, ts: now });
-      
-      // Cap at max save size
-      if (entries.length >= botConfig.deduplication.fingerprintSaveCap) {
-        break;
+    sock.ev.on("creds.update", async () => {
+      if (saveCreds) {
+        await saveCreds();
       }
-    }
+    });
 
-    fs.writeFileSync(fpFile, JSON.stringify(entries, null, 2), 'utf8');
-    log.info(`💾 Saved ${entries.length} fingerprints to disk`);
-    
-    fingerprintDirty = false;
-  } catch (error) {
-    log.error(`❌ Failed to save fingerprints: ${error.message}`);
-  }
-}
+    // ========================================================================
+    // MESSAGE HANDLER - WITH SESSION STABILIZATION GATE
+    // ========================================================================
 
-/**
- * Force save on shutdown
- */
-function forceSaveFingerprints() {
-  if (fingerprintSaveTimer) {
-    clearTimeout(fingerprintSaveTimer);
-  }
-  saveFingerprintsToDisk();
-}
-
-// ============================================================================
-// MESSAGE HANDLER WITH ANTI-BAN HARDENING
-// ============================================================================
-
-/**
- * 🔒 Core message handler with all anti-ban gates
- */
-async function handleMessage(message) {
-  stats.messagesReceived++;
-
-  try {
-    const messageKey = message.key;
-    const messageContent = message.message;
-    const messageTimestamp = (message.messageTimestamp || 0) * 1000;
-    const now = Date.now();
-
-    // Gate 1: fromMe check
-    if (messageKey.fromMe) {
-      stats.rejected.fromMe++;
-      return;
-    }
-
-    // 🛡️ S1: Session stability check (prevents prekey thrashing)
-    // WHY: Sending immediately after connect can trigger prekey errors
-    if (now < sessionStableAt) {
-      stats.rejected.sessionNotStable++;
-      log.warn(`🛑 Session not stable yet — skipping message (${Math.ceil((sessionStableAt - now) / 1000)}s remaining)`);
-      return;
-    }
-
-    // 🔒 B1: Reconnect age-gate (strict window enforcement)
-    if (reconnectStrictUntil && now < reconnectStrictUntil) {
-      const messageAge = now - messageTimestamp;
-      if (messageAge > STRICT_AGE_MS) {
-        stats.rejected.oldAfterReconnect++;
-        log.info(`🕐 Rejected old message (${Math.floor(messageAge / 1000)}s old, strict window active)`);
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      // CRITICAL: Wait for session stabilization
+      if (!sessionStabilized) {
+        // Silent drop during stabilization window
         return;
       }
-    }
 
-    // 🔒 B2: Replay ID deduplication
-    const messageId = messageKey.id;
-    if (replayIdSet.has(messageId)) {
-      stats.rejected.replayDuplicate++;
-      log.info(`🔁 Rejected replay duplicate: ${messageId}`);
-      return;
-    }
-    
-    // Add to replay set with size limit
-    replayIdSet.add(messageId);
-    if (replayIdSet.size > MAX_REPLAY_IDS) {
-      const oldest = replayIdSet.values().next().value;
-      replayIdSet.delete(oldest);
-    }
+      if (type !== "notify") return;
 
-    // Extract text
-    let messageText = '';
-    if (messageContent?.conversation) {
-      messageText = messageContent.conversation;
-    } else if (messageContent?.extendedTextMessage?.text) {
-      messageText = messageContent.extendedTextMessage.text;
-    }
+      for (const m of messages) {
+        try {
+          // Skip if no message content
+          if (!m.message) continue;
 
-    // Gate 2: Minimum length
-    if (!messageText || messageText.length < botConfig.validation.minMessageLength) {
-      stats.rejected.tooShort++;
-      return;
-    }
+          const messageType = Object.keys(m.message)[0];
 
-    // 🔒 A4: Settling delay on first message after connect
-    if (needsSettlingDelay) {
-      const settlingMs = botConfig.reconnect.settlingMin + 
-        Math.random() * (botConfig.reconnect.settlingMax - botConfig.reconnect.settlingMin);
-      
-      log.info(`⏳ Settling delay: ${Math.floor(settlingMs / 1000)}s`);
-      await new Promise(resolve => setTimeout(resolve, settlingMs));
-      
-      needsSettlingDelay = false;
-    }
+          // SIGNAL PROTOCOL MESSAGE BYPASS - DO NOT PROCESS THESE
+          if (
+            messageType === "protocolMessage" ||
+            messageType === "senderKeyDistributionMessage" ||
+            messageType === "reactionMessage" ||
+            !m.message.conversation && !m.message.extendedTextMessage
+          ) {
+            continue;
+          }
 
-    // Pass to router for processing
-    await routeMessage(sock, message, botConfig);
+          // Only process group messages
+          if (!m.key.remoteJid?.endsWith("@g.us")) continue;
 
-  } catch (error) {
-    log.error(`❌ Message handler error: ${error.message}`);
-  }
-}
+          // Skip own messages
+          if (m.key.fromMe) continue;
 
-// ============================================================================
-// BAILEYS CONNECTION
-// ============================================================================
+          const messageContent =
+            m.message.conversation ||
+            m.message.extendedTextMessage?.text ||
+            "";
 
-export async function connectToWhatsApp(botDir, config, ENV, logger) {
-  botConfig = config;
-  log = logger || console;
-  
-  // 🛡️ S2: Check reconnect rate limit
-  if (!canReconnect()) {
-    await sleepIfRateLimited();
-  }
-  
-  const { state, saveCreds } = await useMultiFileAuthState(ENV.AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
-  const pinoLogger = pino({ level: 'silent' });
+          if (!messageContent) continue;
 
-  sock = makeWASocket({
-    version,
-    logger: pinoLogger,
-    printQRInTerminal: false,
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
-    },
-    markOnlineOnConnect: false,
-  });
+          // DEDUPLICATION - TEXT MESSAGES ONLY (Signal messages already bypassed)
+          // Stable key format: <remoteJid>-<messageId>
+          const messageKey = `${m.key.remoteJid}-${m.key.id}`;
+          
+          if (processedMessages.has(messageKey)) {
+            continue;
+          }
 
-  // 🔒 C2: Load fingerprints from disk on startup
-  loadFingerprintsFromDisk(botDir);
+          processedMessages.set(messageKey, Date.now());
 
-  // Initialize router
-  initializeRouter(config, log);
+          // Extract sender info
+          const senderJid = m.key.participant || m.key.remoteJid;
+          const senderNumber = senderJid.split("@")[0];
 
-  // QR CODE HANDLING
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+          console.log("\n" + "=".repeat(60));
+          console.log(`📨 Message from: ${senderNumber}`);
+          console.log(`📍 Group: ${m.key.remoteJid}`);
+          console.log(`💬 Content: ${messageContent.substring(0, 100)}...`);
+          console.log("=".repeat(60));
 
-    if (qr) {
-      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('📱 SCAN THIS QR CODE:');
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-      qrcode.generate(qr, { small: true });
-      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+          // Route to processing pipeline
+          await processMessage(sock, m, CONFIG);
 
-      currentQR = qr;
-      log.info(`🔄 QR code refreshed`);
-      log.info(`🌐 QR available at: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
-    }
-
-    if (connection === 'close') {
-      const shouldReconnect = 
-        (lastDisconnect?.error instanceof Boom)
-          ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
-          : true;
-
-      log.warn(`⚠️  Connection closed. Reconnecting: ${shouldReconnect}`);
-
-      if (shouldReconnect) {
-        isConnected = false;
-        currentQR = null;
-        
-        // 🔒 C2: Force save fingerprints before reconnect
-        forceSaveFingerprints();
-        
-        setTimeout(() => {
-          connectToWhatsApp(botDir, config, ENV, log);
-        }, 3000);
-      }
-    } else if (connection === 'open') {
-      log.info('✅ WhatsApp Connected!');
-      isConnected = true;
-      currentQR = null;
-      
-      // 🛡️ S1: Activate session stabilization delay
-      // WHY: Prevents prekey thrashing by waiting 8s before any sends
-      sessionStableAt = Date.now() + SESSION_STABILIZE_MS;
-      log.info(`🧠 Signal session stabilizing for ${SESSION_STABILIZE_MS / 1000}s`);
-      
-      // 🔒 B1: Activate strict age window
-      reconnectStrictUntil = Date.now() + STRICT_WINDOW_DURATION;
-      log.info(`🔒 Strict age window active for ${STRICT_WINDOW_DURATION / 1000}s`);
-      
-      // 🔒 A4: Reset settling delay flag
-      needsSettlingDelay = true;
-    }
-  });
-
-  sock.ev.on('creds.update', saveCreds);
-
-  // Handle incoming messages
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-
-    for (const message of messages) {
-      await handleMessage(message);
-    }
-  });
-
-  return sock;
-}
-
-// ============================================================================
-// QR SERVER (HTTP ENDPOINT)
-// ============================================================================
-
-export function startQRServer(ENV, config, logger) {
-  log = logger || console;
-  
-  const app = express();
-  app.use(express.static('public'));
-  
-  // Serve QR via HTTP as PNG image
-  app.get('/qr', async (req, res) => {
-    if (isConnected) {
-      return res.status(200).json({ 
-        success: true,
-        message: 'WhatsApp is already connected',
-        connected: true
-      });
-    }
-
-    if (!currentQR) {
-      return res.status(404).json({ 
-        error: 'No QR code available',
-        message: 'QR not yet generated. Please wait...',
-        connected: false
-      });
-    }
-
-    try {
-      const qrBuffer = await QRCode.toBuffer(currentQR, {
-        type: 'png',
-        width: 400,
-        margin: 2
-      });
-
-      res.setHeader('Content-Type', 'image/png');
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.send(qrBuffer);
-    } catch (error) {
-      log.error(`❌ Failed to generate QR: ${error.message}`);
-      res.status(500).json({ 
-        error: 'Failed to generate QR code',
-        message: error.message
-      });
-    }
-  });
-
-  // Get QR as base64
-  app.get('/qr/base64', async (req, res) => {
-    if (isConnected) {
-      return res.json({ 
-        success: true,
-        message: 'WhatsApp is already connected',
-        connected: true
-      });
-    }
-
-    if (!currentQR) {
-      return res.status(404).json({ 
-        error: 'No QR code available',
-        message: 'QR not yet generated. Please wait...',
-        connected: false
-      });
-    }
-
-    try {
-      const qrDataURL = await QRCode.toDataURL(currentQR, {
-        width: 400,
-        margin: 2
-      });
-
-      res.json({
-        success: true,
-        qr: qrDataURL,
-        message: 'Scan this QR code with WhatsApp',
-        connected: false
-      });
-    } catch (error) {
-      log.error(`❌ Failed to generate QR: ${error.message}`);
-      res.status(500).json({ 
-        error: 'Failed to generate QR code',
-        message: error.message
-      });
-    }
-  });
-
-  app.get('/status', (req, res) => {
-    res.json({
-      connected: isConnected,
-      qrAvailable: currentQR !== null,
-      botName: ENV.BOT_NAME,
-      timestamp: Date.now(),
-      stats: {
-        messagesReceived: stats.messagesReceived,
-        rejected: stats.rejected
-      }
-    });
-  });
-
-  app.get('/stats', (req, res) => {
-    const routerStats = getRouterStats();
-    
-    res.json({
-      botName: ENV.BOT_NAME,
-      connected: isConnected,
-      ...routerStats,
-      messageHandler: {
-        received: stats.messagesReceived,
-        rejected: stats.rejected
-      },
-      antiBan: {
-        reconnectProtection: {
-          strictWindowActive: Date.now() < reconnectStrictUntil,
-          strictAgeMs: STRICT_AGE_MS,
-          strictWindowDuration: STRICT_WINDOW_DURATION
-        },
-        replayProtection: {
-          cachedIds: replayIdSet.size,
-          maxIds: MAX_REPLAY_IDS
-        },
-        fingerprintPersistence: {
-          inMemory: fingerprintSet.size,
-          dirty: fingerprintDirty
-        },
-        sessionStability: {
-          sessionStable: Date.now() >= sessionStableAt,
-          stabilizeMs: SESSION_STABILIZE_MS,
-          remainingMs: Math.max(0, sessionStableAt - Date.now())
-        },
-        reconnectRateLimit: {
-          reconnectsInWindow: reconnects.length,
-          maxReconnects: MAX_RECONNECTS,
-          windowMs: RECONNECT_WINDOW_MS
-        }
-      },
-      config: {
-        sourceGroups: config.sourceGroupIds.length,
-        pipelines: config.pipelines.length,
-        pipelineDetails: config.pipelines.map(p => ({
-          name: p.name,
-          cityScope: p.cityScope,
-          targetGroupCount: p.targetGroups.length
-        }))
-      }
-    });
-  });
-
-  app.get('/groups', async (req, res) => {
-    if (!sock || !isConnected) {
-      return res.status(503).json({ 
-        error: 'WhatsApp not connected',
-        message: 'Please scan QR code first'
-      });
-    }
-
-    try {
-      const groupsDict = await sock.groupFetchAllParticipating();
-      const groups = Object.values(groupsDict).map(g => ({
-        id: g.id,
-        name: g.subject,
-        participantsCount: g.participants.length
-      }));
-
-      // Categorize groups
-      const categorized = groups.map(g => {
-        let type = 'other';
-        let category = 'Unmonitored';
-
-        if (config.sourceGroupIds.includes(g.id)) {
-          type = 'source';
-          category = 'Source Group';
-        } else {
-          for (const pipeline of config.pipelines) {
-            if (pipeline.targetGroups.includes(g.id)) {
-              type = 'pipeline';
-              category = `Pipeline: ${pipeline.name}`;
-              break;
-            }
+        } catch (error) {
+          console.error("❌ Error processing message:", error);
+          
+          // If error is crypto-related, log but don't crash
+          if (
+            error.message?.includes("Decryption error") ||
+            error.message?.includes("Bad MAC")
+          ) {
+            console.error("⚠️ Crypto error in message processing - may need reconnect");
           }
         }
-
-        return { ...g, type, category };
-      });
-
-      // Sort by type priority
-      const sortOrder = { source: 1, pipeline: 2, other: 3 };
-      categorized.sort((a, b) => {
-        const orderA = sortOrder[a.type] || 99;
-        const orderB = sortOrder[b.type] || 99;
-        if (orderA !== orderB) {
-          return orderA - orderB;
-        }
-        return (a.name || '').localeCompare(b.name || '');
-      });
-
-      res.json({
-        success: true,
-        totalGroups: groups.length,
-        connectedAs: sock.user?.id || 'Unknown',
-        breakdown: {
-          source: categorized.filter(g => g.type === 'source').length,
-          pipeline: categorized.filter(g => g.type === 'pipeline').length,
-          other: categorized.filter(g => g.type === 'other').length,
-        },
-        groups: categorized
-      });
-
-    } catch (error) {
-      log.error('❌ Failed to get groups:', error);
-      res.status(500).json({ 
-        error: error.message,
-        success: false
-      });
-    }
-  });
-
-  app.get('/health', (req, res) => {
-    const routerStats = getRouterStats();
-    const uptime = process.uptime();
-    const memUsage = process.memoryUsage();
-    
-    const health = {
-      status: isConnected ? 'healthy' : 'unhealthy',
-      uptime: Math.floor(uptime),
-      uptimeHuman: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
-      whatsapp: {
-        connected: isConnected,
-        user: sock?.user?.id || null
-      },
-      memory: {
-        heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
-        heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
-        rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`
-      },
-      stats: {
-        processed: routerStats.stats.processed,
-        hourly: `${routerStats.messageCount.hourly}/${config.rateLimits.hourly}`,
-        daily: `${routerStats.messageCount.daily}/${config.rateLimits.daily}`
-      },
-      circuitBreaker: {
-        open: routerStats.circuitBreaker.isOpen,
-        failures: routerStats.circuitBreaker.failureCount
       }
-    };
-    
-    res.status(isConnected ? 200 : 503).json(health);
-  });
+    });
 
-  app.listen(ENV.QR_SERVER_PORT, () => {
-    log.info(`🌐 QR Server: http://localhost:${ENV.QR_SERVER_PORT}/qr`);
-    log.info(`🌐 QR Base64: http://localhost:${ENV.QR_SERVER_PORT}/qr/base64`);
-    log.info(`📊 Stats: http://localhost:${ENV.QR_SERVER_PORT}/stats`);
-    log.info(`👥 Groups: http://localhost:${ENV.QR_SERVER_PORT}/groups`);
-    log.info(`💚 Health: http://localhost:${ENV.QR_SERVER_PORT}/health`);
-  });
+  } catch (error) {
+    console.error("❌ Fatal connection error:", error);
+    
+    // Destroy socket on fatal error
+    destroySocket("fatal error");
+    
+    // Schedule reconnect with backoff
+    scheduleReconnect("fatal error");
+  } finally {
+    socketCreationInProgress = false;
+  }
 }
 
 // ============================================================================
 // GRACEFUL SHUTDOWN
 // ============================================================================
 
-process.on('SIGINT', () => {
-  log.info('👋 Shutting down...');
+async function gracefulShutdown(signal) {
+  console.log(`\n🛑 Received ${signal} - shutting down gracefully...`);
   
-  // 🔒 C2: Force save fingerprints
-  forceSaveFingerprints();
-  
-  if (sock) {
-    sock.end();
-  }
-  
-  process.exit(0);
-});
+  isShuttingDown = true;
 
-process.on('SIGTERM', () => {
-  log.info('📥 Received SIGTERM');
-  
-  // 🔒 C2: Force save fingerprints
-  forceSaveFingerprints();
-  
-  if (sock) {
-    sock.end();
+  // Clear reconnect timer
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
-  
+
+  // Clear stabilization timer
+  if (stabilizationTimer) {
+    clearTimeout(stabilizationTimer);
+    stabilizationTimer = null;
+  }
+
+  // Destroy socket
+  destroySocket("shutdown");
+
+  // Save store
+  try {
+    if (store) {
+      store.writeToFile(path.join(ENV.BOT_DIR, "baileys_store.json"));
+      console.log("💾 Store saved");
+    }
+  } catch (err) {
+    console.error("⚠️ Failed to save store:", err.message);
+  }
+
+  // Close QR server
+  try {
+    qrServer.close(() => {
+      console.log("🔌 QR server closed");
+    });
+  } catch (err) {
+    console.error("⚠️ Failed to close QR server:", err.message);
+  }
+
+  console.log("✅ Graceful shutdown complete");
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// ============================================================================
+// STARTUP SEQUENCE
+// ============================================================================
+
+(async () => {
+  try {
+    // Load auth state ONCE
+    await initializeAuthState();
+
+    // Connect
+    await connectToWhatsApp();
+  } catch (error) {
+    console.error("❌ Startup failed:", error);
+    process.exit(1);
+  }
+})();
