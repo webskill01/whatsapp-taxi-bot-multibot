@@ -17,12 +17,9 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
-  fetchLatestBaileysVersion,
   Browsers,
-  makeInMemoryStore as baileysMakeInMemoryStore,
 } from "@whiskeysockets/baileys";
 
-const makeStore = baileysMakeInMemoryStore || (() => null);
 import NodeCache from "node-cache";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -75,19 +72,6 @@ const logger = pino({
     },
   },
 });
-
-// ============================================================================
-// MEMORY STORE
-// ============================================================================
-
-const store = makeStore({ logger });
-store?.readFromFile?.(path.join(ENV.BOT_DIR, "baileys_store.json"));
-
-setInterval(() => {
-  if (!isShuttingDown) {
-    store?.writeToFile?.(path.join(ENV.BOT_DIR, "baileys_store.json"));
-  }
-}, 120000);
 
 // ============================================================================
 // MESSAGE CACHE & DEDUPLICATION
@@ -374,22 +358,10 @@ console.log("📦 Baileys version: pinned (npm-installed)");
       generateHighQualityLinkPreview: true,
       syncFullHistory: false,
       markOnlineOnConnect: false,
-      getMessage: async (key) => {
-        if (store) {
-          const msg = await store.loadMessage(key.remoteJid, key.id);
-          return msg?.message || undefined;
-        }
-        return undefined;
-      },
     });
 
     // Set as active socket
     activeSocket = sock;
-
-    // Bind store
-    if (store) {
-      store.bind(sock.ev);
-    }
 
     // ========================================================================
     // CONNECTION UPDATES
