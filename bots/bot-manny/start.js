@@ -12,9 +12,10 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { loadConfig } from './configLoader.js';
-import { startBot } from './index.js';
-import { createLogger } from './logger.js';
+import { loadConfig } from '../../core/configLoader.js';
+import { startBot } from '../../core/index.js';
+import { createLogger } from '../../core/logger.js';
+
 
 // =============================================================================
 // PATH RESOLUTION
