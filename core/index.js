@@ -20,12 +20,14 @@
 // ✅ Rate limiting
 // =============================================================================
 
-import makeWASocket, {
+import {
+  makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
+
 
 import express from "express";
 import pino from "pino";
