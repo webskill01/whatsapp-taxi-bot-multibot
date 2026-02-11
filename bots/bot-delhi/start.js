@@ -12,7 +12,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadConfig } from '../../core/configLoader.js';
 import { connectToWhatsApp, startQRServer } from '../../core/index.js';
-import { cleanupRouter } from '../../core/router.js';
 import { createLogger, panic } from '../../core/logger.js';
 
 // ============================================================================
@@ -179,8 +178,6 @@ function printOperationalSummary() {
 process.on('SIGINT', () => {
   log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   log.info(`👋 Shutting down ${ENV.BOT_NAME}...`);
-  
-  cleanupRouter(config);
   
   if (sock) {
     sock.end();

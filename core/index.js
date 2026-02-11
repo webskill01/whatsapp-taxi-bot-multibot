@@ -574,16 +574,6 @@ async function gracefulShutdown(signal) {
   // Destroy socket
   destroySocket("shutdown");
 
-  // Save store
-  try {
-    if (store) {
-      store.writeToFile(path.join(ENV.BOT_DIR, "baileys_store.json"));
-      console.log("💾 Store saved");
-    }
-  } catch (err) {
-    console.error("⚠️ Failed to save store:", err.message);
-  }
-
   // Close QR server
   try {
     qrServer.close(() => {
