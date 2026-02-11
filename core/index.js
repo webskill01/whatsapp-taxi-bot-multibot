@@ -19,8 +19,10 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
   Browsers,
-  makeInMemoryStore,
+  makeInMemoryStore as baileysMakeInMemoryStore,
 } from "@whiskeysockets/baileys";
+
+const makeStore = baileysMakeInMemoryStore || (() => null);
 import NodeCache from "node-cache";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -47,6 +49,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_RECONNECT_DELAY = 5000; // 5 seconds
 const MAX_RECONNECT_DELAY = 120000; // 2 minutes
 const SESSION_STABILIZATION_DELAY = 15000; // 15 seconds after connection open
+
 
 // ============================================================================
 // STARTUP
@@ -77,12 +80,12 @@ const logger = pino({
 // MEMORY STORE
 // ============================================================================
 
-const store = makeInMemoryStore({ logger });
-store?.readFromFile(path.join(ENV.BOT_DIR, "baileys_store.json"));
+const store = makeStore({ logger });
+store?.readFromFile?.(path.join(ENV.BOT_DIR, "baileys_store.json"));
 
 setInterval(() => {
   if (!isShuttingDown) {
-    store?.writeToFile(path.join(ENV.BOT_DIR, "baileys_store.json"));
+    store?.writeToFile?.(path.join(ENV.BOT_DIR, "baileys_store.json"));
   }
 }, 120000);
 
@@ -353,8 +356,9 @@ async function connectToWhatsApp() {
       throw new Error("Auth state not initialized - this should never happen");
     }
 
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`📦 Baileys version: ${version} ${isLatest ? "(latest)" : "(outdated)"}`);
+    const version = undefined; // let Baileys use its internal stable version
+console.log("📦 Baileys version: pinned (npm-installed)");
+
 
     // Create new socket with FRESH Signal store per socket
     const sock = makeWASocket({
