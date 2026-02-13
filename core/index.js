@@ -18,10 +18,12 @@
 // ✅ Wildcard pipeline support (cityScope: ["*"])
 // ✅ Pipeline-based forwarding
 //
-// HTTP QR ENDPOINT:
+// HTTP ENDPOINTS:
 // ✅ /qr - PNG image for remote scanning
 // ✅ /qr/base64 - Base64 data URL
-// ✅ Auto-refresh every 20s (QR expiry handling)
+// ✅ /stats - Full bot statistics
+// ✅ /groups - List all groups with categorization
+// ✅ /ping - Health check
 // =============================================================================
 
 import {
@@ -89,6 +91,7 @@ export async function startBot(config, log, authDir) {
     sendFailures: 0,
     reconnectCount: 0,
     pipelineMatches: 0,
+    cryptoErrors: 0, // Track crypto errors (they're normal, not real errors)
   };
 
   // B1: Reconnect state tracking
@@ -415,6 +418,7 @@ export async function startBot(config, log, authDir) {
       const { version } = await fetchLatestBaileysVersion();
       log.info(`📦 Baileys version: ${version.join(".")}`);
 
+      // Suppress crypto errors (they're normal - devices joining/leaving groups)
       const baileysLogger = pino({
         level: "warn",
         hooks: {
@@ -425,8 +429,12 @@ export async function startBot(config, log, authDir) {
               (msg.includes("closing session") ||
                 msg.includes("decrypt") ||
                 msg.includes("bad mac") ||
-                msg.includes("failed to decrypt"))
+                msg.includes("failed to decrypt") ||
+                msg.includes("InvalidMessageException") ||
+                msg.includes("No session found"))
             ) {
+              // These are normal - count them but don't spam logs
+              stats.cryptoErrors++;
               return;
             }
             method.apply(this, inputArgs);
@@ -568,7 +576,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // STATS SERVER + QR ENDPOINTS (Bot-1 pattern + HTTP QR)
+  // STATS SERVER + ENDPOINTS
   // ===========================================================================
 
   function startStatsServer() {
@@ -622,14 +630,120 @@ export async function startBot(config, log, authDir) {
       });
     });
 
-    // QR Code PNG endpoint (for img tag)
+    // Groups endpoint - lists all groups with categorization and sorting
+    app.get("/groups", async (req, res) => {
+      if (!sock || !botFullyOperational) {
+        return res.status(503).json({ 
+          error: "Bot not connected to WhatsApp",
+          operational: botFullyOperational 
+        });
+      }
+
+      try {
+        // Fetch all groups the bot is a member of
+        const groupChats = await sock.groupFetchAllParticipating();
+        const allGroups = Object.values(groupChats).map((chat) => ({
+          id: chat.id,
+          name: chat.subject || "Unknown Group",
+          participantsCount: chat.participants?.length || 0,
+          createdAt: chat.creation ? new Date(chat.creation * 1000).toISOString() : null,
+        }));
+
+        // Build category sets for classification
+        const sourceSet = new Set(config.sourceGroupIds);
+        const targetSet = new Set();
+        
+        // Collect all target groups from all pipelines
+        config.pipelines.forEach(pipeline => {
+          pipeline.targetGroups.forEach(groupId => {
+            targetSet.add(groupId);
+          });
+        });
+
+        // Categorize each group
+        const categorized = allGroups.map((group) => {
+          let category = "Unmonitored";
+          let type = "other";
+          let pipelineInfo = null;
+
+          if (sourceSet.has(group.id)) {
+            category = "Source Group";
+            type = "source";
+          } else if (targetSet.has(group.id)) {
+            // Find which pipeline(s) this group belongs to
+            const pipelines = config.pipelines.filter(p => 
+              p.targetGroups.includes(group.id)
+            );
+            
+            if (pipelines.length > 0) {
+              category = "Target Group";
+              type = "target";
+              pipelineInfo = pipelines.map(p => ({
+                name: p.name,
+                cityScope: p.cityScope,
+              }));
+            }
+          }
+
+          return {
+            ...group,
+            category,
+            type,
+            pipelineInfo,
+          };
+        });
+
+        // Sort by priority: Source → Target → Unmonitored, then by name
+        const sortOrder = {
+          source: 1,
+          target: 2,
+          other: 3,
+        };
+
+        categorized.sort((a, b) => {
+          const orderA = sortOrder[a.type] || 99;
+          const orderB = sortOrder[b.type] || 99;
+          if (orderA !== orderB) return orderA - orderB;
+          return (a.name || "").localeCompare(b.name || "");
+        });
+
+        // Response
+        res.json({
+          success: true,
+          bot: {
+            name: process.env.BOT_NAME || "unknown",
+            phone: sock.user?.id || "unknown",
+          },
+          totalGroups: categorized.length,
+          breakdown: {
+            source: categorized.filter((g) => g.type === "source").length,
+            target: categorized.filter((g) => g.type === "target").length,
+            unmonitored: categorized.filter((g) => g.type === "other").length,
+          },
+          pipelines: config.pipelines.map(p => ({
+            name: p.name,
+            cityScope: p.cityScope,
+            targetCount: p.targetGroups.length,
+          })),
+          groups: categorized,
+        });
+
+      } catch (err) {
+        log.error(`❌ /groups error: ${err.message}`);
+        res.status(500).json({
+          success: false,
+          error: err.message,
+        });
+      }
+    });
+
+    // QR Code PNG endpoint
     app.get("/qr", async (req, res) => {
       if (!latestQR) {
         res.status(404).send("QR code not available. Bot may already be connected or still starting.");
         return;
       }
 
-      // Check if QR is too old (WhatsApp QR codes expire ~20s)
       const qrAge = Date.now() - (qrTimestamp || 0);
       if (qrAge > 20000) {
         res.status(410).send("QR code expired. Please wait for a new one (auto-refreshes every ~20s).");
@@ -653,7 +767,7 @@ export async function startBot(config, log, authDir) {
       }
     });
 
-    // QR Code Base64 endpoint (for data URLs)
+    // QR Code Base64 endpoint
     app.get("/qr/base64", async (req, res) => {
       if (!latestQR) {
         res.status(404).json({ 
@@ -693,6 +807,7 @@ export async function startBot(config, log, authDir) {
     app.listen(statsPort, "0.0.0.0", () => {
       log.info(`📊 Stats server: http://0.0.0.0:${statsPort}/stats`);
       log.info(`📱 QR scanner: http://0.0.0.0:${statsPort}/qr-scanner.html?port=${statsPort}`);
+      log.info(`👥 Groups API: http://0.0.0.0:${statsPort}/groups`);
     });
   }
 
@@ -720,6 +835,7 @@ export async function startBot(config, log, authDir) {
     log.info(`   Processed:   ${stats.totalProcessed}`);
     log.info(`   Duplicates:  ${stats.duplicatesSkipped}`);
     log.info(`   Replays:     ${stats.replayIdsSkipped}`);
+    log.info(`   Crypto Errs: ${stats.cryptoErrors} (normal)`);
     log.info(`   Reconnects:  ${stats.reconnectCount}`);
     log.info(`   Sends OK:    ${stats.sendSuccesses}`);
     log.info(`   Sends FAIL:  ${stats.sendFailures}`);
