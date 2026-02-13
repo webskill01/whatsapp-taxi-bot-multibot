@@ -22,6 +22,8 @@ module.exports = {
       // 🧠 Memory
       max_memory_restart: "500M",
 
+      start_delay: 0, // 🚀 start immediately
+
       // 📜 Logs
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
       error_file: "./logs/bot-delhi-error.log",
@@ -56,6 +58,7 @@ module.exports = {
       shutdown_with_message: true,
 
       max_memory_restart: "500M",
+      start_delay: 20000,
 
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
       error_file: "./logs/bot-sachin-error.log",
@@ -90,6 +93,7 @@ module.exports = {
       shutdown_with_message: true,
 
       max_memory_restart: "500M",
+      start_delay: 40000,
 
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
       error_file: "./logs/bot-manny-error.log",
