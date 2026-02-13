@@ -23,11 +23,6 @@ baileys_auth/
 .wwebjs_auth/
 .wwebjs_cache/
 
-# ✅ QR Code Images (Generated files)
-**/qr-codes/*.png
-**/qr-codes/*.jpg
-qr-codes/
-
 # ✅ Fingerprint Cache (Auto-generated per bot)
 **/.forwarded-messages.json
 .forwarded-messages.json
@@ -65,9 +60,3 @@ temp/
 # Build outputs
 dist/
 build/
-
-# Docker (if you decide to use it later)
-docker-compose.override.yml
-
-# Redis data (if using Docker)
-redis-data/

@@ -1,40 +1,39 @@
 {
   "name": "whatsapp-taxi-bot-multibot",
-  "version": "4.0.1",
-  "description": "Multi-pipeline WhatsApp taxi routing bot using Baileys",
+  "version": "5.0.0",
+  "description": "Multi-pipeline WhatsApp taxi routing bot with military-grade anti-ban protection",
   "type": "module",
-
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start:delhi": "node bots/bot-delhi/start.js",
     "start:sachin": "node bots/bot-sachin/start.js",
     "start:manny": "node bots/bot-manny/start.js",
-
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop all",
     "pm2:restart": "pm2 restart all",
+    "pm2:reload": "pm2 reload all",
     "pm2:logs": "pm2 logs",
     "pm2:status": "pm2 status",
     "pm2:save": "pm2 save",
-
-    "clean": "find bots -name '.forwarded-messages.json' -delete"
+    "clean": "find bots -name '.forwarded-messages.json' -delete && find bots -name 'baileys_auth' -type d -exec rm -rf {} +"
   },
-
   "keywords": [
     "whatsapp",
     "baileys",
     "automation",
     "taxi",
     "routing",
-    "multi-bot"
+    "multi-bot",
+    "anti-ban",
+    "pipeline"
   ],
-
   "author": "Nitin",
   "license": "MIT",
-
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.9",
     "@hapi/boom": "^10.0.1",
-    "axios": "^1.7.9",
+    "@whiskeysockets/baileys": "^6.7.9",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pino": "^9.5.0",
@@ -42,13 +41,7 @@
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
   },
-
   "devDependencies": {
     "pm2": "^5.4.2"
-  },
-
-  "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
   }
 }

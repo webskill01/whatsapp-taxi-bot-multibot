@@ -2,8 +2,8 @@
  * ============================================================================
  * FILTER - Message Validation & City Extraction
  * ============================================================================
- * Preserved from OLD bot - DO NOT modify routing logic
- * Enhanced with fingerprinting from NEW bot
+ * Bot-2 logic PRESERVED (pickup/drop extraction)
+ * Enhanced with fingerprinting from Bot-1
  */
 
 const ROUTE_PATTERNS = [
@@ -85,70 +85,11 @@ export function containsBlockedNumber(text, blockedNumbers) {
   return false;
 }
 
+// Import city aliases from separate file (Bot-2 separation preserved)
+import { CITY_ALIASES } from "./cityAliases.js";
+
 function getCityAliasMap() {
-  return {
-    // Delhi + Airports + NCR
-    "dli": "Delhi", "dehli": "Delhi", "dilli": "Delhi", "new delhi": "Delhi",
-    "t3": "Delhi", "t2": "Delhi", "t1": "Delhi",
-    "terminal 3": "Delhi", "terminal 2": "Delhi", "terminal 1": "Delhi",
-    "igi": "Delhi", "igi airport": "Delhi", "delhi airport": "Delhi",
-    "isbt delhi": "Delhi", "kashmere gate": "Delhi", "kashmiri gate": "Delhi",
-    "dwarka": "Delhi", "connaught place": "Delhi", "aerocity": "Delhi",
-
-    // Gurgaon
-    "ggn": "Gurgaon", "gurgoan": "Gurgaon", "gurugram": "Gurgaon",
-    "grg": "Gurgaon", "cyber city": "Gurgaon", "golf course road": "Gurgaon",
-    "sohna": "Gurgaon", "manesar": "Gurgaon",
-
-    // Noida
-    "noida sector": "Noida", "nioda": "Noida", "greater noida": "Noida",
-    "faridabad": "Noida", "ghaziabad": "Noida",
-
-    // Ambala
-    "amb": "Ambala", "ambl": "Ambala", "ambala cantt": "Ambala",
-    "ambala city": "Ambala", "ambala cantonment": "Ambala",
-    "ambala railway station": "Ambala",
-
-    // Patiala
-    "ptl": "Patiala", "pti": "Patiala", "patiyala": "Patiala",
-    "sirhind": "Patiala", "rajpura": "Patiala", "nabha": "Patiala",
-    "samana": "Patiala",
-
-    // Chandigarh + Tricity
-    "chd": "Chandigarh", "chandi": "Chandigarh", "chandhigarh": "Chandigarh",
-    "chandigarh sector": "Chandigarh", "sector": "Chandigarh",
-    "sec 17": "Chandigarh", "sec 35": "Chandigarh",
-    "isbt 17": "Chandigarh", "isbt 43": "Chandigarh",
-    "43 bus stand": "Chandigarh", "43 isbt": "Chandigarh",
-    "bus stand 43": "Chandigarh", "chandigarh 43": "Chandigarh",
-    "panchkula": "Chandigarh", "isbt chandigarh": "Chandigarh",
-    "chandigarh airport": "Chandigarh",
-
-    // Zirakpur
-    "zkp": "Zirakpur", "zirkpur": "Zirakpur", "jerkpur": "Zirakpur",
-    "zirkapur": "Zirakpur", "dera basi": "Zirakpur", "dera bassi": "Zirakpur",
-    "derabassi": "Zirakpur", "dhakoli": "Zirakpur",
-
-    // Mohali
-    "mhl": "Mohali", "mohali sector": "Mohali",
-    "sahibzada ajit singh nagar": "Mohali", "sas nagar": "Mohali",
-    "kharar": "Mohali", "khrar": "Mohali", "kahrar": "Mohali",
-    "kharad": "Mohali", "kurali": "Mohali", "mohali phase": "Mohali",
-    "phase 11": "Mohali", "phase 10": "Mohali", "mohali airport": "Mohali",
-    "landran": "Mohali",
-
-    // Amritsar
-    "asr": "Amritsar", "amritser": "Amritsar", "amritsarr": "Amritsar",
-    "golden temple": "Amritsar", "wagah border": "Amritsar",
-    "amritsar airport": "Amritsar",
-
-    // Ludhiana
-    "ldh": "Ludhiana", "ludhiyana": "Ludhiana", "ludhianaa": "Ludhiana",
-
-    // Jalandhar
-    "jld": "Jalandhar", "jalandar": "Jalandhar", "jullundur": "Jalandhar",
-    "phagwara": "Jalandhar",
-  };
+  return CITY_ALIASES;
 }
 
 /**
@@ -189,7 +130,8 @@ export function extractPickupCity(text, cities) {
   }
 
   // Pattern 1: "from X to Y" - extract X as pickup
-  const fromToPattern = /\bfrom\s+([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
+  const fromToPattern =
+    /\bfrom\s+([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
   const fromToMatch = normalized.match(fromToPattern);
 
   if (fromToMatch) {
@@ -206,7 +148,8 @@ export function extractPickupCity(text, cities) {
       }
 
       if (i < sourceWords.length - 2) {
-        const threeWords = sourceWords[i] + " " + sourceWords[i + 1] + " " + sourceWords[i + 2];
+        const threeWords =
+          sourceWords[i] + " " + sourceWords[i + 1] + " " + sourceWords[i + 2];
         const city = isConfiguredCity(threeWords, cities);
         if (city) return city;
       }
@@ -237,7 +180,8 @@ export function extractPickupCity(text, cities) {
   }
 
   // Pattern 3: "pickup: X" or "pickup X"
-  const pickupPattern = /\bpickup\s*:?\s*([a-z\s]+?)(?:\s*drop|\s*to|\s*-|\s*phone|\s*\d|$)/i;
+  const pickupPattern =
+    /\bpickup\s*:?\s*([a-z\s]+?)(?:\s*drop|\s*to|\s*-|\s*phone|\s*\d|$)/i;
   const pickupMatch = normalized.match(pickupPattern);
 
   if (pickupMatch) {
@@ -318,25 +262,29 @@ export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
 }
 
 /**
- * 🔒 Anti-ban hardening (ported from new core)
+ * 🔒 Anti-ban hardening (ported from Bot-1)
  * Generates a text-based fingerprint for deduplication.
  * Same message within the same 5-minute window produces identical fingerprint.
  */
-export function getMessageFingerprint(text, messageId = null, timestamp = null) {
+export function getMessageFingerprint(
+  text,
+  messageId = null,
+  timestamp = null
+) {
   if (!text) return "";
 
   const normalized = text
     .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[^\w\s]/g, '')
-    .replace(/\d{10,}/g, 'PHONE')
+    .replace(/\s+/g, " ")
+    .replace(/[^\w\s]/g, "")
+    .replace(/\d{10,}/g, "PHONE")
     .trim()
     .substring(0, 300);
 
   let hash = 0;
   for (let i = 0; i < normalized.length; i++) {
     const char = normalized.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
 

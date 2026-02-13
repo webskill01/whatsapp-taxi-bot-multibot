@@ -96,6 +96,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      background: #f8f9fa;
+      border-radius: 10px;
+      padding: 20px;
     }
 
     #qr-image {
@@ -212,6 +215,25 @@
       margin-top: 15px;
       font-size: 0.9em;
     }
+
+    .error-message {
+      background: #f8d7da;
+      color: #721c24;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 15px 0;
+      font-size: 0.9em;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    .loading-text {
+      animation: pulse 1.5s infinite;
+      color: #666;
+    }
   </style>
 </head>
 <body>
@@ -221,7 +243,7 @@
       <div class="bot-info">
         <h1 id="bot-name">Loading...</h1>
         <div class="port" id="bot-port">Port: ----</div>
-        <div class="hardening-badge">🛡️ PROTECTED</div>
+        <div class="hardening-badge">🛡️ v5.0 PROTECTED</div>
       </div>
     </div>
 
@@ -229,6 +251,7 @@
 
     <div class="qr-container">
       <img id="qr-image" src="" alt="QR Code" class="hidden">
+      <div id="loading-text" class="loading-text">Waiting for QR code...</div>
       <div class="refresh-indicator" id="refresh-indicator">🔄</div>
     </div>
 
@@ -243,7 +266,7 @@
       </ol>
       
       <div class="warning-text" id="warning-text" style="display: none;">
-        ⚠️ QR code expires every 20 seconds. Auto-refreshing...
+        ⚠️ QR code refreshes automatically every 5 seconds
       </div>
     </div>
 
@@ -253,12 +276,11 @@
 
     <div class="actions">
       <button class="btn btn-primary" onclick="manualRefresh()">🔄 Refresh Now</button>
-      <a href="/" class="btn btn-secondary">🏠 Dashboard</a>
+      <a href="/index.html" class="btn btn-secondary">🏠 Dashboard</a>
     </div>
   </div>
 
   <script>
-    // ✅ Use dynamic hostname (already correct in original)
     const HOST = window.location.hostname || 'localhost';
     const urlParams = new URLSearchParams(window.location.search);
     const BOT_PORT = urlParams.get('port') || '3001';
@@ -268,13 +290,14 @@
     let countdownId;
     let countdown = 5;
     let consecutiveFailures = 0;
+    let isConnected = false;
 
     function getBotIcon(name) {
       const icons = {
         'delhi': '🏛️', 'mumbai': '🌊', 'bangalore': '💻',
         'chennai': '🏖️', 'kolkata': '🎭', 'hyderabad': '💎',
         'pune': '🏰', 'ahmedabad': '🕌', 'jaipur': '🐘',
-        'kanav': '👨‍💼', 'punjab': '🌾', 'tricity': '🏙️'
+        'sachin': '🏏', 'manny': '👨‍💼', 'punjab': '🌾', 'tricity': '🏙️'
       };
       const nameLower = (name || '').toLowerCase();
       for (const [key, icon] of Object.entries(icons)) {
@@ -286,15 +309,15 @@
     async function checkStatus() {
       try {
         const res = await fetch(`${API_URL}/status`, {
-          signal: AbortSignal.timeout(5000) // 5s timeout
+          signal: AbortSignal.timeout(5000)
         });
         const data = await res.json();
         
-        // ✅ Reset failure counter on success
         consecutiveFailures = 0;
         
         const statusDiv = document.getElementById('status');
         const qrImage = document.getElementById('qr-image');
+        const loadingText = document.getElementById('loading-text');
         const instructions = document.getElementById('instructions');
         const warningText = document.getElementById('warning-text');
         
@@ -307,16 +330,21 @@
         document.getElementById('bot-port').textContent = `Port: ${BOT_PORT}`;
         
         if (data.connected) {
+          isConnected = true;
           statusDiv.className = 'status connected success-animation';
           statusDiv.textContent = '✅ Connected to WhatsApp!';
           qrImage.classList.add('hidden');
+          loadingText.textContent = 'Bot connected successfully!';
+          loadingText.classList.remove('loading-text');
           instructions.classList.add('hidden');
+          document.getElementById('timer').classList.add('hidden');
+          
           clearInterval(intervalId);
           clearInterval(countdownId);
           
           setTimeout(() => {
             if (confirm('✅ Bot connected successfully!\n\n🛡️ Anti-ban protection is now active.\n\nReturn to dashboard?')) {
-              window.location.href = '/';
+              window.location.href = '/index.html';
             }
           }, 2000);
         } else if (data.qrAvailable) {
@@ -324,11 +352,14 @@
           statusDiv.textContent = '📱 Scan this QR code with WhatsApp';
           instructions.classList.remove('hidden');
           warningText.style.display = 'block';
+          loadingText.classList.add('hidden');
           loadQR();
         } else {
           statusDiv.className = 'status waiting';
           statusDiv.textContent = '⏳ Waiting for QR code...';
           qrImage.classList.add('hidden');
+          loadingText.classList.remove('hidden');
+          loadingText.textContent = 'Bot is starting, please wait...';
           warningText.style.display = 'none';
         }
       } catch (err) {
@@ -336,15 +367,22 @@
         consecutiveFailures++;
         
         const statusDiv = document.getElementById('status');
+        const loadingText = document.getElementById('loading-text');
         statusDiv.className = 'status error';
         
         if (consecutiveFailures >= 3) {
           statusDiv.textContent = `❌ Bot offline or unreachable (${consecutiveFailures} attempts)`;
-          document.getElementById('warning-text').textContent = 
-            '⚠️ Check if bot is running: pm2 status';
-          document.getElementById('warning-text').style.display = 'block';
+          loadingText.innerHTML = `
+            <div class="error-message">
+              ⚠️ Cannot connect to bot on port ${BOT_PORT}<br>
+              Check if bot is running: <code>pm2 status</code>
+            </div>
+          `;
+          loadingText.classList.remove('hidden');
+          document.getElementById('qr-image').classList.add('hidden');
         } else {
           statusDiv.textContent = '⏳ Connecting to bot...';
+          loadingText.textContent = 'Attempting to connect...';
         }
       }
     }
@@ -352,6 +390,7 @@
     function loadQR() {
       const img = document.getElementById('qr-image');
       const refreshIndicator = document.getElementById('refresh-indicator');
+      const loadingText = document.getElementById('loading-text');
       
       img.classList.add('loading');
       refreshIndicator.classList.add('active');
@@ -360,13 +399,16 @@
       
       img.onload = () => {
         img.classList.remove('loading', 'hidden');
+        loadingText.classList.add('hidden');
         refreshIndicator.classList.remove('active');
       };
       
       img.onerror = () => {
+        console.warn('QR image failed to load, will retry on next interval');
         img.classList.add('hidden');
+        loadingText.classList.remove('hidden');
+        loadingText.textContent = 'Waiting for QR code...';
         refreshIndicator.classList.remove('active');
-        console.warn('QR image failed to load');
       };
       
       img.src = newSrc;
@@ -374,24 +416,30 @@
     }
 
     function manualRefresh() {
-      loadQR();
-      checkStatus();
-      countdown = 5;
+      if (!isConnected) {
+        loadQR();
+        checkStatus();
+        countdown = 5;
+      }
     }
 
     function updateCountdown() {
-      document.getElementById('countdown').textContent = countdown;
-      countdown--;
-      if (countdown < 0) countdown = 5;
+      if (!isConnected) {
+        document.getElementById('countdown').textContent = countdown;
+        countdown--;
+        if (countdown < 0) countdown = 5;
+      }
     }
 
     // Initial check
     checkStatus();
     
-    // Auto-refresh every 5 seconds
+    // Auto-refresh every 5 seconds (WhatsApp QR codes expire ~20s, so we refresh more frequently)
     intervalId = setInterval(() => {
-      checkStatus();
-      countdown = 5;
+      if (!isConnected) {
+        checkStatus();
+        countdown = 5;
+      }
     }, 5000);
     
     // Update countdown every second

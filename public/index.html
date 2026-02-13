@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🤖 Multi-Bot Dashboard</title>
+  <title>🤖 Multi-Bot Dashboard v5.0</title>
   <style>
     * {
       margin: 0;
@@ -19,7 +19,7 @@
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
     }
 
@@ -38,6 +38,17 @@
     header p {
       font-size: 1.2em;
       opacity: 0.9;
+    }
+
+    .version-badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.2);
+      color: white;
+      padding: 5px 12px;
+      border-radius: 15px;
+      font-size: 0.7em;
+      margin-left: 10px;
+      font-weight: 600;
     }
 
     .config-section {
@@ -157,7 +168,7 @@
 
     .bots-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
       gap: 30px;
       margin-top: 20px;
     }
@@ -207,6 +218,12 @@
     .bot-info .port {
       color: #666;
       font-size: 0.9em;
+    }
+
+    .bot-info .phone {
+      color: #999;
+      font-size: 0.8em;
+      margin-top: 3px;
     }
 
     .status {
@@ -294,6 +311,24 @@
       transition: all 0.3s ease;
     }
 
+    .pipeline-info {
+      background: #f8f9fa;
+      padding: 10px;
+      border-radius: 8px;
+      margin-top: 10px;
+      font-size: 0.85em;
+    }
+
+    .pipeline-badge {
+      display: inline-block;
+      background: #667eea;
+      color: white;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 0.75em;
+      margin: 3px 3px 3px 0;
+    }
+
     footer {
       text-align: center;
       color: white;
@@ -353,18 +388,19 @@
 <body>
   <div class="container">
     <header>
-      <h1>🤖 Multi-Bot Dashboard</h1>
-      <p>Manage your WhatsApp taxi bots with anti-ban protection <span class="hardening-badge">🛡️ HARDENED</span></p>
+      <h1>🤖 Multi-Bot Dashboard <span class="version-badge">v5.0</span></h1>
+      <p>Multi-Pipeline Taxi Routing with Military-Grade Protection <span class="hardening-badge">🛡️ 10-LAYER HARDENED</span></p>
     </header>
 
     <div class="config-section">
       <h2>🔧 Configure Bot Ports</h2>
       <p style="color: #666; margin-bottom: 15px;">
-        Add ports for each bot (from their .env files). Example: bot-delhi uses 3001, bot-kanav uses 3002, etc.
+        Add STATS_PORT for each bot (from their .env files). Example: bot-delhi uses 3001, bot-sachin uses 3002, bot-manny uses 3003.
       </p>
       <div class="port-list" id="port-list">
         <input type="number" class="port-input" placeholder="3001" value="3001">
         <input type="number" class="port-input" placeholder="3002" value="3002">
+        <input type="number" class="port-input" placeholder="3003" value="3003">
       </div>
       <button class="btn-add" onclick="addPortInput()">➕ Add Port</button>
       <button class="btn-add" onclick="manualRefresh()" id="refresh-btn">🔄 Refresh Now</button>
@@ -375,7 +411,7 @@
           <span id="updating-indicator" class="updating-indicator" style="display: none;"></span>
         </div>
         <div class="auto-refresh-toggle">
-          <span>Auto-refresh</span>
+          <span>Auto-refresh (10s)</span>
           <label class="toggle-switch">
             <input type="checkbox" id="auto-refresh-toggle" checked>
             <span class="toggle-slider"></span>
@@ -384,7 +420,7 @@
       </div>
       
       <div class="info-box">
-        💡 <strong>Tip:</strong> The dashboard auto-detects bot names from each port's /status endpoint. 
+        💡 <strong>Tip:</strong> The dashboard auto-detects bot names and pipeline configs from /stats endpoint. 
         Hover over a bot card to pause auto-refresh.
       </div>
       
@@ -398,9 +434,9 @@
     </div>
 
     <footer>
-      <p>💡 Click "Scan QR" to connect a bot to WhatsApp</p>
-      <p>🛡️ Protected with 10-layer anti-ban hardening</p>
-      <p style="margin-top: 10px; font-size: 0.9em;">Made with ❤️ for taxi businesses</p>
+      <p>🎯 Multi-Pipeline Routing: One message → Multiple destinations</p>
+      <p>🛡️ Bot-1 Stability + Bot-2 Flexibility = Production Ready</p>
+      <p style="margin-top: 10px; font-size: 0.9em;">v5.0 Refactored - Made with ❤️ for taxi businesses</p>
     </footer>
   </div>
 
@@ -411,7 +447,7 @@
     let refreshInterval = null;
     let isRefreshing = false;
     let isPaused = false;
-    let botsData = new Map(); // Store bot data to avoid full re-render
+    let botsData = new Map();
 
     function addPortInput() {
       const portList = document.getElementById('port-list');
@@ -419,7 +455,7 @@
       input.type = 'number';
       input.className = 'port-input';
       input.placeholder = '300X';
-      portList.insertBefore(input, portList.lastElementChild);
+      portList.appendChild(input);
     }
 
     function getPorts() {
@@ -429,28 +465,16 @@
         .filter(port => port > 0 && port < 65536);
     }
 
-    async function checkBotStatus(port) {
-      try {
-        const res = await fetch(`http://${HOST}:${port}/status`, {
-          signal: AbortSignal.timeout(3000)
-        });
-        const data = await res.json();
-        return { ...data, port, online: true };
-      } catch (err) {
-        console.warn(`Bot on port ${port} is offline:`, err.message);
-        return { connected: false, qrAvailable: false, port, online: false };
-      }
-    }
-
     async function getBotStats(port) {
       try {
         const res = await fetch(`http://${HOST}:${port}/stats`, {
           signal: AbortSignal.timeout(3000)
         });
         const data = await res.json();
-        return data;
+        return { ...data, port, online: true };
       } catch (err) {
-        return null;
+        console.warn(`Bot on port ${port} is offline:`, err.message);
+        return { port, online: false, operational: false };
       }
     }
 
@@ -459,7 +483,8 @@
         'delhi': '🏛️', 'mumbai': '🌊', 'bangalore': '💻',
         'chennai': '🏖️', 'kolkata': '🎭', 'hyderabad': '💎',
         'pune': '🏰', 'ahmedabad': '🕌', 'jaipur': '🐘',
-        'lucknow': '🏛️', 'kanav': '👨‍💼', 'punjab': '🌾', 'tricity': '🏙️'
+        'lucknow': '🏛️', 'sachin': '🏏', 'manny': '👨‍💼', 
+        'punjab': '🌾', 'tricity': '🏙️'
       };
       
       const nameLower = (name || '').toLowerCase();
@@ -469,57 +494,84 @@
       return '🤖';
     }
 
-    function formatBotCard(port, status, stats) {
+    function formatBotCard(stats) {
+      const port = stats.port;
       let statusClass = 'loading';
       let statusText = '⏳ Checking...';
-      let botName = status.botName || `Bot Port ${port}`;
+      let botName = stats.bot?.name || `Bot Port ${port}`;
+      let botPhone = stats.bot?.phone || 'Not configured';
       let botIcon = getBotIcon(botName);
 
-      if (!status.online) {
+      if (!stats.online) {
         statusClass = 'offline';
         statusText = '❌ Offline';
-      } else if (status.connected) {
+      } else if (stats.operational) {
         statusClass = 'connected';
         statusText = '✅ Connected';
-      } else if (status.qrAvailable) {
-        statusClass = 'disconnected';
-        statusText = '📱 QR Ready';
       } else {
         statusClass = 'disconnected';
         statusText = '⏳ Starting...';
       }
 
-      let statsHTML = '';
-      if (stats && stats.messageCount) {
-        const dailyLimit = stats.config?.rateLimits?.daily || 1000;
-        const hourlyLimit = stats.config?.rateLimits?.hourly || 100;
-        const dailyUsage = Math.round((stats.messageCount.daily / dailyLimit) * 100);
-        const hourlyUsage = Math.round((stats.messageCount.hourly / hourlyLimit) * 100);
+      // Pipeline info (Bot-2 specific)
+      let pipelineHTML = '';
+      if (stats.config?.pipelines) {
+        const pipelineCount = stats.config.pipelines;
+        pipelineHTML = `
+          <div class="pipeline-info">
+            <strong>🎯 Pipelines: ${pipelineCount}</strong>
+          </div>
+        `;
+      }
 
+      // Stats display
+      let statsHTML = '';
+      if (stats.stats) {
         statsHTML = `
           <div class="stats">
             <div class="stats-item">
-              <span>📨 Today:</span>
-              <strong>${stats.messageCount.daily || 0}/${dailyLimit} (${dailyUsage}%)</strong>
-            </div>
-            <div class="stats-item">
-              <span>⏱️ This hour:</span>
-              <strong>${stats.messageCount.hourly || 0}/${hourlyLimit} (${hourlyUsage}%)</strong>
-            </div>
-            <div class="stats-item">
-              <span>✅ Processed:</span>
-              <strong>${stats.stats?.processed || 0}</strong>
+              <span>📨 Processed:</span>
+              <strong>${stats.stats.totalProcessed || 0}</strong>
             </div>
             <div class="stats-item">
               <span>🔁 Duplicates:</span>
-              <strong>${stats.stats?.duplicate || 0}</strong>
+              <strong>${stats.stats.duplicatesSkipped || 0}</strong>
             </div>
-            ${stats.circuitBreaker?.isOpen ? `
+            <div class="stats-item">
+              <span>🎯 Pipeline Matches:</span>
+              <strong>${stats.stats.pipelineMatches || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>✅ Sends OK:</span>
+              <strong>${stats.stats.sendSuccesses || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>❌ Sends Fail:</span>
+              <strong>${stats.stats.sendFailures || 0}</strong>
+            </div>
+            ${stats.stats.rejectedBlockedNumber > 0 ? `
             <div class="stats-item" style="color: #dc3545;">
-              <span>🔒 Circuit:</span>
-              <strong>OPEN (${stats.circuitBreaker.failureCount} fails)</strong>
+              <span>🚫 Blocked:</span>
+              <strong>${stats.stats.rejectedBlockedNumber}</strong>
             </div>
             ` : ''}
+          </div>
+        `;
+      }
+
+      // Cache info
+      let cacheHTML = '';
+      if (stats.cache) {
+        cacheHTML = `
+          <div class="stats">
+            <div class="stats-item">
+              <span>💾 Fingerprints:</span>
+              <strong>${stats.cache.fingerprintSet || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>🔄 Replay IDs:</span>
+              <strong>${stats.cache.replayIdSet || 0}</strong>
+            </div>
           </div>
         `;
       }
@@ -531,24 +583,30 @@
             <div class="bot-info">
               <h2>${botName}</h2>
               <div class="port">Port: ${port}</div>
+              <div class="phone">${botPhone}</div>
             </div>
           </div>
           
           <div class="status ${statusClass}" data-status>${statusText}</div>
           
+          ${pipelineHTML}
+          
           <div data-stats>${statsHTML}</div>
           
+          <div data-cache>${cacheHTML}</div>
+          
           <div class="actions">
-            <a href="/qr-scanner.html?port=${port}" 
-               class="btn btn-primary"
-               ${!status.online ? 'style="opacity:0.5;pointer-events:none;"' : ''}>
-              📱 Scan QR
-            </a>
             <a href="http://${HOST}:${port}/stats" 
                target="_blank" 
+               class="btn btn-primary"
+               ${!stats.online ? 'style="opacity:0.5;pointer-events:none;"' : ''}>
+              📊 Full Stats
+            </a>
+            <a href="http://${HOST}:${port}/ping" 
+               target="_blank" 
                class="btn btn-secondary"
-               ${!status.online ? 'style="opacity:0.5;pointer-events:none;"' : ''}>
-              📊 Stats
+               ${!stats.online ? 'style="opacity:0.5;pointer-events:none;"' : ''}>
+              🏥 Ping
             </a>
           </div>
         </div>
@@ -556,37 +614,27 @@
     }
 
     async function updateBotCard(port) {
-      const status = await checkBotStatus(port);
       const stats = await getBotStats(port);
-      
-      // Store data for future updates
-      botsData.set(port, { status, stats });
+      botsData.set(port, stats);
 
-      // Find existing card
       const card = document.querySelector(`.bot-card[data-port="${port}"]`);
       
       if (!card) {
-        // Card doesn't exist, need full render
         return null;
       }
 
-      // Update only status and stats (not entire card)
+      // Update status
       const statusEl = card.querySelector('[data-status]');
-      const statsEl = card.querySelector('[data-stats]');
-
       if (statusEl) {
         let statusClass = 'loading';
         let statusText = '⏳ Checking...';
 
-        if (!status.online) {
+        if (!stats.online) {
           statusClass = 'offline';
           statusText = '❌ Offline';
-        } else if (status.connected) {
+        } else if (stats.operational) {
           statusClass = 'connected';
           statusText = '✅ Connected';
-        } else if (status.qrAvailable) {
-          statusClass = 'disconnected';
-          statusText = '📱 QR Ready';
         } else {
           statusClass = 'disconnected';
           statusText = '⏳ Starting...';
@@ -596,41 +644,59 @@
         statusEl.textContent = statusText;
       }
 
-      if (statsEl && stats && stats.messageCount) {
-        const dailyLimit = stats.config?.rateLimits?.daily || 1000;
-        const hourlyLimit = stats.config?.rateLimits?.hourly || 100;
-        const dailyUsage = Math.round((stats.messageCount.daily / dailyLimit) * 100);
-        const hourlyUsage = Math.round((stats.messageCount.hourly / hourlyLimit) * 100);
-
+      // Update stats
+      const statsEl = card.querySelector('[data-stats]');
+      if (statsEl && stats.stats) {
         statsEl.innerHTML = `
           <div class="stats">
             <div class="stats-item">
-              <span>📨 Today:</span>
-              <strong>${stats.messageCount.daily || 0}/${dailyLimit} (${dailyUsage}%)</strong>
-            </div>
-            <div class="stats-item">
-              <span>⏱️ This hour:</span>
-              <strong>${stats.messageCount.hourly || 0}/${hourlyLimit} (${hourlyUsage}%)</strong>
-            </div>
-            <div class="stats-item">
-              <span>✅ Processed:</span>
-              <strong>${stats.stats?.processed || 0}</strong>
+              <span>📨 Processed:</span>
+              <strong>${stats.stats.totalProcessed || 0}</strong>
             </div>
             <div class="stats-item">
               <span>🔁 Duplicates:</span>
-              <strong>${stats.stats?.duplicate || 0}</strong>
+              <strong>${stats.stats.duplicatesSkipped || 0}</strong>
             </div>
-            ${stats.circuitBreaker?.isOpen ? `
+            <div class="stats-item">
+              <span>🎯 Pipeline Matches:</span>
+              <strong>${stats.stats.pipelineMatches || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>✅ Sends OK:</span>
+              <strong>${stats.stats.sendSuccesses || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>❌ Sends Fail:</span>
+              <strong>${stats.stats.sendFailures || 0}</strong>
+            </div>
+            ${stats.stats.rejectedBlockedNumber > 0 ? `
             <div class="stats-item" style="color: #dc3545;">
-              <span>🔒 Circuit:</span>
-              <strong>OPEN (${stats.circuitBreaker.failureCount} fails)</strong>
+              <span>🚫 Blocked:</span>
+              <strong>${stats.stats.rejectedBlockedNumber}</strong>
             </div>
             ` : ''}
           </div>
         `;
       }
 
-      return { status, stats };
+      // Update cache
+      const cacheEl = card.querySelector('[data-cache]');
+      if (cacheEl && stats.cache) {
+        cacheEl.innerHTML = `
+          <div class="stats">
+            <div class="stats-item">
+              <span>💾 Fingerprints:</span>
+              <strong>${stats.cache.fingerprintSet || 0}</strong>
+            </div>
+            <div class="stats-item">
+              <span>🔄 Replay IDs:</span>
+              <strong>${stats.cache.replayIdSet || 0}</strong>
+            </div>
+          </div>
+        `;
+      }
+
+      return stats;
     }
 
     async function fullRender() {
@@ -645,16 +711,15 @@
       grid.innerHTML = '<p style="color:white;text-align:center;grid-column:1/-1;" class="loading">🔄 Loading bots...</p>';
       
       const botsHTML = await Promise.all(ports.map(async port => {
-        const status = await checkBotStatus(port);
         const stats = await getBotStats(port);
-        botsData.set(port, { status, stats });
-        return formatBotCard(port, status, stats);
+        botsData.set(port, stats);
+        return formatBotCard(stats);
       }));
       
       grid.innerHTML = botsHTML.join('');
 
       // Show warning if any bots are offline
-      const offlineBots = Array.from(botsData.values()).filter(data => !data.status.online).length;
+      const offlineBots = Array.from(botsData.values()).filter(data => !data.online).length;
       const warningBox = document.getElementById('connection-warning');
       warningBox.style.display = offlineBots > 0 ? 'block' : 'none';
     }
@@ -669,20 +734,16 @@
       const ports = getPorts();
       const existingCards = document.querySelectorAll('.bot-card');
       
-      // If ports changed or no cards exist, do full render
       if (ports.length !== existingCards.length || existingCards.length === 0) {
         await fullRender();
       } else {
-        // Otherwise, just update existing cards
         await Promise.all(ports.map(port => updateBotCard(port)));
         
-        // Update warning box
-        const offlineBots = Array.from(botsData.values()).filter(data => !data.status.online).length;
+        const offlineBots = Array.from(botsData.values()).filter(data => !data.online).length;
         const warningBox = document.getElementById('connection-warning');
         warningBox.style.display = offlineBots > 0 ? 'block' : 'none';
       }
       
-      // Update last update time
       const now = new Date();
       document.getElementById('last-update-time').textContent = now.toLocaleTimeString();
       
@@ -712,7 +773,6 @@
       isPaused = false;
     }
 
-    // Auto-refresh toggle
     document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
       autoRefreshEnabled = e.target.checked;
       

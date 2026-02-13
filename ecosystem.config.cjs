@@ -7,16 +7,15 @@ module.exports = {
       instances: 1,
       exec_mode: "fork",
 
+      // 🔒 Bot-1 Stability Settings
       autorestart: true,
       watch: false,
-
-      // 🔒 Stability
-      restart_delay: 8000,
-      min_uptime: 20000,
-      max_restarts: 5,
+      restart_delay: 8000,         // 8s cooldown between restarts
+      min_uptime: 20000,            // Must stay up 20s or counts as crash
+      max_restarts: 5,              // 5 crashes in min_uptime window = stop
 
       // 🧹 Graceful shutdown
-      kill_timeout: 15000,
+      kill_timeout: 15000,          // 15s for SIGTERM handler
       kill_signal: "SIGTERM",
       shutdown_with_message: true,
 
@@ -29,15 +28,13 @@ module.exports = {
       out_file: "./logs/bot-delhi-out.log",
       merge_logs: true,
       log_type: "raw",
-      max_size: "10M",
-      retain: 7,
 
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
         NODE_OPTIONS: "--max-old-space-size=480",
         BOT_NAME: "bot-delhi",
-        STATS_PORT: 3001,
+        STATS_PORT: "3001",
       },
     },
 
@@ -50,7 +47,6 @@ module.exports = {
 
       autorestart: true,
       watch: false,
-
       restart_delay: 8000,
       min_uptime: 20000,
       max_restarts: 5,
@@ -66,15 +62,13 @@ module.exports = {
       out_file: "./logs/bot-sachin-out.log",
       merge_logs: true,
       log_type: "raw",
-      max_size: "10M",
-      retain: 7,
 
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
         NODE_OPTIONS: "--max-old-space-size=480",
         BOT_NAME: "bot-sachin",
-        STATS_PORT: 3002,
+        STATS_PORT: "3002",
       },
     },
 
@@ -87,7 +81,6 @@ module.exports = {
 
       autorestart: true,
       watch: false,
-
       restart_delay: 8000,
       min_uptime: 20000,
       max_restarts: 5,
@@ -103,15 +96,13 @@ module.exports = {
       out_file: "./logs/bot-manny-out.log",
       merge_logs: true,
       log_type: "raw",
-      max_size: "10M",
-      retain: 7,
 
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
         NODE_OPTIONS: "--max-old-space-size=480",
         BOT_NAME: "bot-manny",
-        STATS_PORT: 3003,
+        STATS_PORT: "3003",
       },
     },
   ],
