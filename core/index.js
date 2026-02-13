@@ -24,6 +24,10 @@
 // ✅ /stats - Full bot statistics
 // ✅ /groups - List all groups with categorization
 // ✅ /ping - Health check
+//
+// FINGERPRINT FIXES:
+// ✅ Per-bot fingerprinting (each bot has own cache)
+// ✅ Fingerprint added AFTER all validations (saves space)
 // =============================================================================
 
 import {
@@ -67,7 +71,7 @@ export async function startBot(config, log, authDir) {
   let latestQR = null;
   let qrTimestamp = null;
 
-  // Fingerprint deduplication
+  // Fingerprint deduplication (PER-BOT)
   const fingerprintSet = new Set();
 
   // B2: Rolling replay ID set
@@ -87,11 +91,12 @@ export async function startBot(config, log, authDir) {
     rejectedBlockedNumber: 0,
     rejectedByReconnectAgeGate: 0,
     rejectedNotMonitored: 0,
+    rejectedRateLimit: 0,
     sendSuccesses: 0,
     sendFailures: 0,
     reconnectCount: 0,
     pipelineMatches: 0,
-    cryptoErrors: 0, // Track crypto errors (they're normal, not real errors)
+    cryptoErrors: 0,
   };
 
   // B1: Reconnect state tracking
@@ -106,9 +111,12 @@ export async function startBot(config, log, authDir) {
   let saveDebounceTimer = null;
 
   const BOT_START_TIME = Date.now();
+  
+  // ✅ FIX #2: Per-bot fingerprint file (uses botPhone for uniqueness)
+  const BOT_FINGERPRINT_FILENAME = `fingerprints_${config.botPhone?.replace(/\D/g, "") || "default"}.json`;
   const FINGERPRINT_FILE = path.join(
     config.botDir || process.cwd(),
-    GLOBAL_CONFIG.deduplication.fingerprintFile
+    BOT_FINGERPRINT_FILENAME
   );
 
   // ===========================================================================
@@ -128,10 +136,10 @@ export async function startBot(config, log, authDir) {
             loaded++;
           }
         }
-        log.info(`📂 Loaded ${loaded} fingerprints (2h TTL)`);
+        log.info(`📂 Loaded ${loaded} fingerprints (2h TTL) from ${BOT_FINGERPRINT_FILENAME}`);
       } else {
         fs.writeFileSync(FINGERPRINT_FILE, JSON.stringify([]), "utf8");
-        log.info("📂 Created fingerprint cache file");
+        log.info(`📂 Created per-bot fingerprint file: ${BOT_FINGERPRINT_FILENAME}`);
       }
     } catch (err) {
       log.warn(`⚠️  Fingerprint load failed: ${err.message}`);
@@ -153,7 +161,7 @@ export async function startBot(config, log, authDir) {
       );
       fingerprintDirty = false;
       log.info(
-        `📂 Saved ${Math.min(data.length, GLOBAL_CONFIG.deduplication.fingerprintSaveCap)} fingerprints`
+        `📂 Saved ${Math.min(data.length, GLOBAL_CONFIG.deduplication.fingerprintSaveCap)} fingerprints to ${BOT_FINGERPRINT_FILENAME}`
       );
     } catch (err) {
       log.warn(`⚠️  Fingerprint save failed: ${err.message}`);
@@ -268,34 +276,16 @@ export async function startBot(config, log, authDir) {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 🔒 FINGERPRINT MUTEX (add NOW before any async work)
+    // ⚠️ MOVED: Fingerprint check happens HERE, but NOT added yet
+    // We check for duplicate, but only add AFTER validation succeeds
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     const timeBucket = Math.floor(messageTimestampMs / (5 * 60 * 1000));
     const fingerprint = getMessageFingerprint(text, null, timeBucket);
 
+    // Early duplicate check (before validation)
     if (fingerprintSet.has(fingerprint)) {
       stats.duplicatesSkipped++;
       return;
-    }
-
-    fingerprintSet.add(fingerprint);
-    markDirty();
-
-    // ── C1: Cleanup if over cap ──
-    if (fingerprintSet.size > GLOBAL_CONFIG.deduplication.maxFingerprintCache) {
-      const targetSize = Math.floor(
-        GLOBAL_CONFIG.deduplication.maxFingerprintCache *
-          GLOBAL_CONFIG.deduplication.cleanupTargetRatio
-      );
-      const toDelete = fingerprintSet.size - targetSize;
-      const iterator = fingerprintSet.values();
-      for (let i = 0; i < toDelete; i++) {
-        const val = iterator.next().value;
-        if (val) fingerprintSet.delete(val);
-      }
-      log.info(
-        `🧹 Fingerprint cleanup: deleted ${toDelete}, remaining ${fingerprintSet.size}`
-      );
     }
 
     // ── A4: Settling delay ──
@@ -314,7 +304,7 @@ export async function startBot(config, log, authDir) {
       await new Promise((r) => setTimeout(r, settleDuration));
     }
 
-    // ── Process message (Bot-2 router) ──
+    // ── Log incoming message ──
     stats.totalProcessed++;
     
     log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -323,7 +313,39 @@ export async function startBot(config, log, authDir) {
     log.info(`   Text: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`);
     log.info(`   Fingerprint: ${fingerprint}`);
 
-    await processMessage(sock, msg, config, stats, log);
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // ✅ FIX #1: Process message (with validation inside router)
+    // Only AFTER processMessage succeeds do we add fingerprint
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    const routingResult = await processMessage(sock, msg, config, stats, log);
+
+    // ✅ FIX #1: Add fingerprint ONLY if message was actually routed/sent
+    if (routingResult && routingResult.wasRouted) {
+      fingerprintSet.add(fingerprint);
+      markDirty();
+
+      log.info(`✅ Fingerprint saved (message was routed)`);
+
+      // ── C1: Cleanup if over cap ──
+      if (fingerprintSet.size > GLOBAL_CONFIG.deduplication.maxFingerprintCache) {
+        const targetSize = Math.floor(
+          GLOBAL_CONFIG.deduplication.maxFingerprintCache *
+            GLOBAL_CONFIG.deduplication.cleanupTargetRatio
+        );
+        const toDelete = fingerprintSet.size - targetSize;
+        const iterator = fingerprintSet.values();
+        for (let i = 0; i < toDelete; i++) {
+          const val = iterator.next().value;
+          if (val) fingerprintSet.delete(val);
+        }
+        log.info(
+          `🧹 Fingerprint cleanup: deleted ${toDelete}, remaining ${fingerprintSet.size}`
+        );
+      }
+    } else {
+      log.info(`⏭️  Fingerprint NOT saved (message rejected by validation)`);
+    }
   }
 
   // ===========================================================================
@@ -516,6 +538,7 @@ export async function startBot(config, log, authDir) {
             });
             log.info(`   🛡️  Anti-ban: 10-layer protection active`);
             log.info(`   🎲 Shuffling: A3 randomization enabled`);
+            log.info(`   📂 Fingerprint file: ${BOT_FINGERPRINT_FILENAME}`);
           }
         }
 
@@ -616,6 +639,7 @@ export async function startBot(config, log, authDir) {
           fingerprintSet: fingerprintSet.size,
           replayIdSet: replayIdSet.size,
           dirty: fingerprintDirty,
+          fingerprintFile: BOT_FINGERPRINT_FILENAME, // ✅ Show per-bot file
         },
         reconnect: {
           lastReconnectTime: lastReconnectTime

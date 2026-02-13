@@ -14,6 +14,10 @@
 // ✅ Circuit breaker integration
 // ✅ Rate limiting
 // ✅ Per-group send cooldown
+//
+// FINGERPRINT FIX:
+// ✅ Returns routing result { wasRouted: boolean } to core/index.js
+// ✅ Fingerprint only saved if wasRouted === true
 // =============================================================================
 
 import {
@@ -296,6 +300,7 @@ async function sendToMultipleGroupsSequential(
 
 // =============================================================================
 // MAIN MESSAGE PROCESSOR (Bot-2 MULTI-PIPELINE ROUTING)
+// ✅ NOW RETURNS: { wasRouted: boolean }
 // =============================================================================
 
 export async function processMessage(sock, message, config, stats, log) {
@@ -309,7 +314,7 @@ export async function processMessage(sock, message, config, stats, log) {
       messageType === "reactionMessage" ||
       messageType === "messageContextInfo"
     ) {
-      return;
+      return { wasRouted: false };
     }
 
     // Extract message content
@@ -319,7 +324,7 @@ export async function processMessage(sock, message, config, stats, log) {
       "";
 
     if (!messageContent) {
-      return;
+      return { wasRouted: false };
     }
 
     const groupId = message.key.remoteJid;
@@ -341,27 +346,27 @@ export async function processMessage(sock, message, config, stats, log) {
     if (!isRequest) {
       stats.rejectedNotTaxi++;
       log.info("⏭️  Not a taxi request");
-      return;
+      return { wasRouted: false };
     }
 
     // Blocked number check
     if (containsBlockedNumber(messageContent, config.blockedPhoneNumbers)) {
       stats.rejectedBlockedNumber++;
       log.info(`🚫 Blocked number from: ${senderNumber}`);
-      return;
+      return { wasRouted: false };
     }
 
     // Phone number requirement
     if (!hasPhoneNumber(messageContent)) {
       stats.rejectedNoPhone++;
       log.info("⏭️  No phone number found");
-      return;
+      return { wasRouted: false };
     }
 
     // Rate limit check
     if (isRateLimited(log)) {
       stats.rejectedRateLimit = (stats.rejectedRateLimit || 0) + 1;
-      return;
+      return { wasRouted: false };
     }
 
     // =========================================================================
@@ -434,10 +439,12 @@ export async function processMessage(sock, message, config, stats, log) {
 
     if (!routedToPipeline) {
       log.info("⏭️  Message did not match any pipeline city scope");
+      return { wasRouted: false };
     } else {
       log.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       log.info(`✅ ROUTING COMPLETE: ${totalSent} messages sent`);
       log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      return { wasRouted: true };
     }
   } catch (error) {
     log.error(`❌ Error in processMessage: ${error.message}`);
@@ -448,6 +455,8 @@ export async function processMessage(sock, message, config, stats, log) {
     ) {
       log.error("⚠️  Crypto error in message processing");
     }
+
+    return { wasRouted: false };
   }
 }
 
