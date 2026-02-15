@@ -18,6 +18,10 @@
 // FINGERPRINT FIX:
 // ✅ Returns routing result { wasRouted: boolean } to core/index.js
 // ✅ Fingerprint only saved if wasRouted === true
+//
+// DEBUG LOGGING:
+// ✅ Detailed validation step logging
+// ✅ Shows why messages fail validation
 // =============================================================================
 
 import {
@@ -301,6 +305,7 @@ async function sendToMultipleGroupsSequential(
 // =============================================================================
 // MAIN MESSAGE PROCESSOR (Bot-2 MULTI-PIPELINE ROUTING)
 // ✅ NOW RETURNS: { wasRouted: boolean }
+// ✅ WITH DEBUG LOGGING
 // =============================================================================
 
 export async function processMessage(sock, message, config, stats, log) {
@@ -332,10 +337,18 @@ export async function processMessage(sock, message, config, stats, log) {
     const senderNumber = senderJid.split("@")[0];
 
     // =========================================================================
-    // CONTENT VALIDATION (Bot-2 gates preserved)
+    // 🔍 DEBUG: START VALIDATION LOGGING
     // =========================================================================
+    log.info("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+    log.info("🔍 VALIDATION CHECKS");
+    log.info("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+    log.info(`   Message preview: "${messageContent.substring(0, 80)}${messageContent.length > 80 ? "..." : ""}"`);
+    log.info(`   Message length: ${messageContent.length} chars`);
+    log.info(`   Sender: ${senderNumber}`);
 
-    // Check if message is a taxi request
+    // =========================================================================
+    // VALIDATION STEP 1: Is Taxi Request?
+    // =========================================================================
     const isRequest = isTaxiRequest(
       messageContent,
       config.requestKeywords,
@@ -343,37 +356,94 @@ export async function processMessage(sock, message, config, stats, log) {
       config.blockedPhoneNumbers
     );
 
+    log.info(`\n   ┌─ [CHECK 1/4] Taxi Request Detection`);
+    log.info(`   │  Result: ${isRequest ? "✅ PASS" : "❌ FAIL"}`);
+    
     if (!isRequest) {
+      log.info(`   │  Reason: Message doesn't match taxi request criteria`);
+      log.info(`   │  Request keywords (sample): ${config.requestKeywords.slice(0, 5).join(", ")}`);
+      log.info(`   │  Ignore keywords (sample): ${config.ignoreIfContains.slice(0, 5).join(", ")}`);
+      log.info(`   └─ ❌ REJECTED: Not a taxi request`);
       stats.rejectedNotTaxi++;
-      log.info("⏭️  Not a taxi request");
       return { wasRouted: false };
     }
+    log.info(`   └─ ✅ Message matches taxi request pattern`);
 
-    // Blocked number check
-    if (containsBlockedNumber(messageContent, config.blockedPhoneNumbers)) {
+    // =========================================================================
+    // VALIDATION STEP 2: Blocked Number Check
+    // =========================================================================
+    const hasBlockedNumber = containsBlockedNumber(messageContent, config.blockedPhoneNumbers);
+    
+    log.info(`\n   ┌─ [CHECK 2/4] Blocked Number Check`);
+    log.info(`   │  Result: ${hasBlockedNumber ? "❌ FAIL" : "✅ PASS"}`);
+    
+    if (hasBlockedNumber) {
+      log.info(`   │  Reason: Message contains a blocked phone number`);
+      log.info(`   │  Sender: ${senderNumber}`);
+      log.info(`   │  Total blocked numbers: ${config.blockedPhoneNumbers.length}`);
+      log.info(`   └─ ❌ REJECTED: Blocked number detected`);
       stats.rejectedBlockedNumber++;
-      log.info(`🚫 Blocked number from: ${senderNumber}`);
       return { wasRouted: false };
     }
+    log.info(`   └─ ✅ No blocked numbers found`);
 
-    // Phone number requirement
-    if (!hasPhoneNumber(messageContent)) {
+    // =========================================================================
+    // VALIDATION STEP 3: Phone Number Detection
+    // =========================================================================
+    const hasPhone = hasPhoneNumber(messageContent);
+    
+    log.info(`\n   ┌─ [CHECK 3/4] Phone Number Detection`);
+    log.info(`   │  Result: ${hasPhone ? "✅ PASS" : "❌ FAIL"}`);
+    
+    if (!hasPhone) {
+      log.info(`   │  Reason: No valid phone number found in message`);
+      log.info(`   │  Message text: "${messageContent.substring(0, 100)}..."`);
+      
+      // Extract potential phone-like patterns for debugging
+      const phonePattern = /(\+?\d{1,4}[-.\s]?)?(\(?\d{1,4}\)?[-.\s]?)?[\d-.\s]{7,}/g;
+      const potentialMatches = messageContent.match(phonePattern);
+      
+      if (potentialMatches) {
+        log.info(`   │  Potential matches found: ${potentialMatches.join(", ")}`);
+        log.info(`   │  (May contain emojis or invalid formats)`);
+      } else {
+        log.info(`   │  No number-like patterns detected at all`);
+      }
+      
+      log.info(`   └─ ❌ REJECTED: No phone number`);
       stats.rejectedNoPhone++;
-      log.info("⏭️  No phone number found");
       return { wasRouted: false };
     }
+    log.info(`   └─ ✅ Valid phone number detected`);
 
-    // Rate limit check
-    if (isRateLimited(log)) {
+    // =========================================================================
+    // VALIDATION STEP 4: Rate Limit Check
+    // =========================================================================
+    const isLimited = isRateLimited(log);
+    
+    log.info(`\n   ┌─ [CHECK 4/4] Rate Limit Check`);
+    log.info(`   │  Result: ${isLimited ? "❌ FAIL" : "✅ PASS"}`);
+    
+    if (isLimited) {
+      log.info(`   │  Reason: Rate limit exceeded`);
+      log.info(`   └─ ❌ REJECTED: Rate limited`);
       stats.rejectedRateLimit = (stats.rejectedRateLimit || 0) + 1;
       return { wasRouted: false };
     }
+    log.info(`   └─ ✅ Within rate limits`);
+
+    // =========================================================================
+    // ✅ ALL VALIDATIONS PASSED
+    // =========================================================================
+    log.info("\n   ╔═══════════════════════════════════════════════════════════╗");
+    log.info("   ║  ✅ ALL VALIDATION CHECKS PASSED - ROUTING MESSAGE       ║");
+    log.info("   ╚═══════════════════════════════════════════════════════════╝");
 
     // =========================================================================
     // MULTI-PIPELINE ROUTING (Bot-2 CORE LOGIC PRESERVED)
     // =========================================================================
 
-    log.info("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+    log.info("\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
     log.info("🔍 ROUTING MESSAGE TO PIPELINES");
     log.info("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
 
@@ -438,7 +508,7 @@ export async function processMessage(sock, message, config, stats, log) {
     }
 
     if (!routedToPipeline) {
-      log.info("⏭️  Message did not match any pipeline city scope");
+      log.info("\n⏭️  Message did not match any pipeline city scope");
       return { wasRouted: false };
     } else {
       log.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -448,6 +518,7 @@ export async function processMessage(sock, message, config, stats, log) {
     }
   } catch (error) {
     log.error(`❌ Error in processMessage: ${error.message}`);
+    log.error(`   Stack: ${error.stack}`);
 
     if (
       error.message?.includes("Decryption error") ||
