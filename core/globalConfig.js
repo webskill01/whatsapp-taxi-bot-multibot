@@ -244,6 +244,11 @@ export const GLOBAL_CONFIG = {
   "9913818592",
   "9913918592",
   "9914577606",
+  "9988921532",
+  "9911470545",
+  "8054609766",
+  "9710100002",
+  "7051774595",
   "9970680118"
 ],
   // 🔒 Anti-ban hardening (Bot-1 constants)
@@ -265,8 +270,8 @@ export const GLOBAL_CONFIG = {
     typingMax: 1800, // 1.8s ceiling
 
     // A5: Weighted between-group gaps
-    betweenMin: 800, // 0.8s floor
-    betweenMax: 1500, // 1.5s ceiling
+    betweenMin: 1000, // 0.8s floor
+    betweenMax: 1800, // 1.5s ceiling
     betweenWeight: 0.65, // 65% bias toward low end
 
     // Random pauses

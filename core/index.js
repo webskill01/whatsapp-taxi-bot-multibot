@@ -1,6 +1,12 @@
 // =============================================================================
 // core/index.js — WhatsApp Bot Core (Bot-1 STABILITY + Bot-2 ROUTING)
 // =============================================================================
+// ✅ ENHANCEMENTS ADDED (no breaking changes):
+//    1. Message age validation (5-minute max)
+//    2. Stable fingerprint filename (botId + phone)
+//    3. Processing delay randomization (2-7s)
+//    4. /health endpoint for monitoring
+// =============================================================================
 // STABILITY FROM BOT-1:
 // ✅ Auth state loaded ONCE via closure
 // ✅ Single socket lifecycle with proper teardown
@@ -24,10 +30,12 @@
 // ✅ /stats - Full bot statistics
 // ✅ /groups - List all groups with categorization
 // ✅ /ping - Health check
+// ✅ /health - Binary health check (NEW)
 //
 // FINGERPRINT FIXES:
 // ✅ Per-bot fingerprinting (each bot has own cache)
-// ✅ Fingerprint added AFTER all validations (saves space)
+// ✅ Optimistic locking (add BEFORE routing, remove if fails)
+// ✅ Prevents race condition during routing phase
 // =============================================================================
 
 import {
@@ -47,6 +55,13 @@ import path from "path";
 import { getMessageFingerprint } from "./filter.js";
 import { processMessage } from "./router.js";
 import { GLOBAL_CONFIG } from "./globalConfig.js";
+
+// =============================================================================
+// ✅ NEW CONSTANTS FOR ENHANCEMENTS
+// =============================================================================
+const MAX_MESSAGE_AGE = 5 * 60 * 1000; // 5 minutes
+const PROCESSING_DELAY_MIN = 2000;     // 2 seconds
+const PROCESSING_DELAY_MAX = 7000;     // 7 seconds
 
 // =============================================================================
 // MAIN EXPORT (Bot-1 pattern)
@@ -73,6 +88,22 @@ export async function startBot(config, log, authDir) {
 
   // Fingerprint deduplication (PER-BOT)
   const fingerprintSet = new Set();
+  
+  // Pending fingerprints (optimistic lock)
+  const pendingFingerprints = new Map();
+  
+  // Cleanup stale pending fingerprints (stuck for >60s)
+  setInterval(() => {
+    const now = Date.now();
+    const staleTimeout = 60000;
+    
+    for (const [fp, timestamp] of pendingFingerprints.entries()) {
+      if (now - timestamp > staleTimeout) {
+        pendingFingerprints.delete(fp);
+        log.warn(`🧹 Removed stale pending fingerprint: ${fp}`);
+      }
+    }
+  }, 30000);
 
   // B2: Rolling replay ID set
   const replayIdSet = new Set();
@@ -92,11 +123,13 @@ export async function startBot(config, log, authDir) {
     rejectedByReconnectAgeGate: 0,
     rejectedNotMonitored: 0,
     rejectedRateLimit: 0,
+    rejectedTooOld: 0, // ✅ NEW: Track old message rejections
     sendSuccesses: 0,
     sendFailures: 0,
     reconnectCount: 0,
     pipelineMatches: 0,
     cryptoErrors: 0,
+    racePrevented: 0,
   };
 
   // B1: Reconnect state tracking
@@ -112,12 +145,36 @@ export async function startBot(config, log, authDir) {
 
   const BOT_START_TIME = Date.now();
   
-  // ✅ FIX #2: Per-bot fingerprint file (uses botPhone for uniqueness)
-  const BOT_FINGERPRINT_FILENAME = `fingerprints_${config.botPhone?.replace(/\D/g, "") || "default"}.json`;
-  const FINGERPRINT_FILE = path.join(
+  // =========================================================================
+  // ✅ ENHANCEMENT #2: STABLE FINGERPRINT FILENAME (botId + phone)
+  // =========================================================================
+  const BOT_ID = config.botId || path.basename(config.botDir || process.cwd());
+  const PHONE = config.botPhone?.replace(/\D/g, "") || "noPhone";
+
+  const NEW_FINGERPRINT_FILENAME = `fingerprints_${BOT_ID}_${PHONE}.json`;
+  const OLD_FINGERPRINT_FILENAME = `fingerprints_${PHONE}.json`;
+
+  const NEW_FINGERPRINT_FILE = path.join(
     config.botDir || process.cwd(),
-    BOT_FINGERPRINT_FILENAME
+    NEW_FINGERPRINT_FILENAME
   );
+  const OLD_FINGERPRINT_FILE = path.join(
+    config.botDir || process.cwd(),
+    OLD_FINGERPRINT_FILENAME
+  );
+
+  // Migrate old fingerprint file to new stable format (backward compatibility)
+  if (fs.existsSync(OLD_FINGERPRINT_FILE) && !fs.existsSync(NEW_FINGERPRINT_FILE)) {
+    try {
+      fs.renameSync(OLD_FINGERPRINT_FILE, NEW_FINGERPRINT_FILE);
+      log.info(`📂 Migrated fingerprint file: ${OLD_FINGERPRINT_FILENAME} → ${NEW_FINGERPRINT_FILENAME}`);
+    } catch (err) {
+      log.warn(`⚠️  Fingerprint migration failed: ${err.message}`);
+    }
+  }
+
+  const FINGERPRINT_FILE = NEW_FINGERPRINT_FILE;
+  const BOT_FINGERPRINT_FILENAME = NEW_FINGERPRINT_FILENAME;
 
   // ===========================================================================
   // C2: FINGERPRINT DISK PERSISTENCE (debounced)
@@ -198,7 +255,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // MESSAGE HANDLER (Bot-1 pattern + Bot-2 router)
+  // MESSAGE HANDLER (Bot-1 pattern + Bot-2 router + RACE FIX + ENHANCEMENTS)
   // ===========================================================================
 
   async function handleMessage(msg) {
@@ -216,14 +273,25 @@ export async function startBot(config, log, authDir) {
     const messageTimestamp = msg.messageTimestamp;
     const messageTimestampMs = messageTimestamp * 1000;
 
-    // ── B1: Reconnect age gate ──
+    // =========================================================================
+    // ✅ ENHANCEMENT #1: MESSAGE AGE VALIDATION (5-minute max)
+    // =========================================================================
+    const messageAge = Date.now() - messageTimestampMs;
+
+    if (messageAge > MAX_MESSAGE_AGE) {
+      stats.rejectedTooOld++;
+      log.warn(`⏰ Old message dropped: ${Math.floor(messageAge / 1000)}s old (max ${MAX_MESSAGE_AGE / 1000}s)`);
+      return;
+    }
+
+    // ── B1: Reconnect age gate (existing logic preserved) ──
     const timeSinceReconnect = Date.now() - lastReconnectTime;
     if (
       lastReconnectTime > 0 &&
       timeSinceReconnect < GLOBAL_CONFIG.reconnect.strictWindowDuration
     ) {
-      const messageAge = Date.now() - messageTimestampMs;
-      if (messageAge > GLOBAL_CONFIG.reconnect.strictAgeMs) {
+      const reconnectMessageAge = Date.now() - messageTimestampMs;
+      if (reconnectMessageAge > GLOBAL_CONFIG.reconnect.strictAgeMs) {
         stats.rejectedByReconnectAgeGate++;
         return;
       }
@@ -276,17 +344,29 @@ export async function startBot(config, log, authDir) {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // ⚠️ MOVED: Fingerprint check happens HERE, but NOT added yet
-    // We check for duplicate, but only add AFTER validation succeeds
+    // RACE CONDITION FIX: Optimistic Locking Strategy (existing, preserved)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     const timeBucket = Math.floor(messageTimestampMs / (5 * 60 * 1000));
     const fingerprint = getMessageFingerprint(text, null, timeBucket);
 
-    // Early duplicate check (before validation)
+    // Check if fingerprint is permanently saved (already processed)
     if (fingerprintSet.has(fingerprint)) {
       stats.duplicatesSkipped++;
+      log.info(`🔁 Duplicate (saved) — skipped: ${fingerprint}`);
       return;
     }
+
+    // Check if fingerprint is currently being processed (race prevention)
+    if (pendingFingerprints.has(fingerprint)) {
+      stats.duplicatesSkipped++;
+      stats.racePrevented++;
+      log.warn(`⚡ Race condition prevented! Message already in routing: ${fingerprint}`);
+      return;
+    }
+
+    // OPTIMISTIC LOCK: Add to pending set IMMEDIATELY
+    pendingFingerprints.set(fingerprint, Date.now());
+    log.info(`🔒 Fingerprint locked (pending): ${fingerprint}`);
 
     // ── A4: Settling delay ──
     if (needsSettlingDelay) {
@@ -304,6 +384,16 @@ export async function startBot(config, log, authDir) {
       await new Promise((r) => setTimeout(r, settleDuration));
     }
 
+    // =========================================================================
+    // ✅ ENHANCEMENT #3: PROCESSING DELAY RANDOMIZATION (2-7 seconds)
+    // =========================================================================
+    const processingDelay =
+      Math.floor(Math.random() * (PROCESSING_DELAY_MAX - PROCESSING_DELAY_MIN)) +
+      PROCESSING_DELAY_MIN;
+
+    log.info(`⏳ Processing delay: ${(processingDelay / 1000).toFixed(1)}s`);
+    await new Promise((r) => setTimeout(r, processingDelay));
+
     // ── Log incoming message ──
     stats.totalProcessed++;
     
@@ -314,20 +404,31 @@ export async function startBot(config, log, authDir) {
     log.info(`   Fingerprint: ${fingerprint}`);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // ✅ FIX #1: Process message (with validation inside router)
-    // Only AFTER processMessage succeeds do we add fingerprint
+    // Process message (with validation inside router)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
-    const routingResult = await processMessage(sock, msg, config, stats, log);
+    let routingResult = null;
+    
+    try {
+      routingResult = await processMessage(sock, msg, config, stats, log);
+    } catch (err) {
+      log.error(`❌ Routing error: ${err.message}`);
+      routingResult = { wasRouted: false };
+    }
 
-    // ✅ FIX #1: Add fingerprint ONLY if message was actually routed/sent
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // DECISION POINT: Save permanently OR discard pending
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
     if (routingResult && routingResult.wasRouted) {
+      // SUCCESS: Message was routed and sent
+      pendingFingerprints.delete(fingerprint);
       fingerprintSet.add(fingerprint);
       markDirty();
 
-      log.info(`✅ Fingerprint saved (message was routed)`);
+      log.info(`✅ Fingerprint saved permanently: ${fingerprint}`);
 
-      // ── C1: Cleanup if over cap ──
+      // C1: Cleanup if over cap
       if (fingerprintSet.size > GLOBAL_CONFIG.deduplication.maxFingerprintCache) {
         const targetSize = Math.floor(
           GLOBAL_CONFIG.deduplication.maxFingerprintCache *
@@ -344,7 +445,9 @@ export async function startBot(config, log, authDir) {
         );
       }
     } else {
-      log.info(`⏭️  Fingerprint NOT saved (message rejected by validation)`);
+      // FAILURE: Message rejected by validation/routing
+      pendingFingerprints.delete(fingerprint);
+      log.info(`🔓 Fingerprint unlocked (rejected): ${fingerprint}`);
     }
   }
 
@@ -455,7 +558,6 @@ export async function startBot(config, log, authDir) {
                 msg.includes("InvalidMessageException") ||
                 msg.includes("No session found"))
             ) {
-              // These are normal - count them but don't spam logs
               stats.cryptoErrors++;
               return;
             }
@@ -503,11 +605,9 @@ export async function startBot(config, log, authDir) {
         if (qr) {
           log.info("📱 QR Code generated - scan with WhatsApp");
           
-          // Store QR for HTTP endpoint
           latestQR = qr;
           qrTimestamp = Date.now();
           
-          // Print to terminal (existing behavior)
           const qrcodeTerminal = (await import("qrcode-terminal")).default;
           qrcodeTerminal.generate(qr, { small: true });
         }
@@ -518,7 +618,6 @@ export async function startBot(config, log, authDir) {
           log.info(`📱 Connected as: ${sock.user?.id || "unknown"}`);
           log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-          // Clear QR on successful connection
           latestQR = null;
           qrTimestamp = null;
 
@@ -528,7 +627,7 @@ export async function startBot(config, log, authDir) {
 
           if (!botFullyOperational) {
             botFullyOperational = true;
-            log.info("🎉 BOT FULLY OPERATIONAL");
+            log.info("🎉 BOT FULLY OPERATIONAL (ENHANCED)");
             log.info(`   📍 Source groups:  ${config.sourceGroupIds.length}`);
             log.info(`   🎯 Pipelines:      ${config.pipelines.length}`);
             config.pipelines.forEach((p) => {
@@ -538,6 +637,9 @@ export async function startBot(config, log, authDir) {
             });
             log.info(`   🛡️  Anti-ban: 10-layer protection active`);
             log.info(`   🎲 Shuffling: A3 randomization enabled`);
+            log.info(`   ⚡ Race prevention: Optimistic locking enabled`);
+            log.info(`   ⏰ Max msg age:   ${MAX_MESSAGE_AGE / 1000}s`);
+            log.info(`   ⏱️  Process delay: ${PROCESSING_DELAY_MIN / 1000}-${PROCESSING_DELAY_MAX / 1000}s`);
             log.info(`   📂 Fingerprint file: ${BOT_FINGERPRINT_FILENAME}`);
           }
         }
@@ -559,7 +661,6 @@ export async function startBot(config, log, authDir) {
             process.exit(1);
           }
 
-          // Crypto error detection
           if (
             errorMsg.includes("Bad MAC") ||
             errorMsg.includes("prekey") ||
@@ -609,10 +710,36 @@ export async function startBot(config, log, authDir) {
     );
     const app = express();
 
-    // Serve static files from public directory
     app.use(express.static("public"));
 
     app.get("/ping", (_, res) => res.send("ALIVE"));
+
+    // =========================================================================
+    // ✅ ENHANCEMENT #4: /health ENDPOINT FOR MONITORING
+    // =========================================================================
+    app.get("/health", (_, res) => {
+      const healthy =
+        botFullyOperational &&
+        sock?.user;
+
+      const failureRate =
+        stats.sendSuccesses + stats.sendFailures > 0
+          ? stats.sendFailures / (stats.sendSuccesses + stats.sendFailures)
+          : 0;
+
+      res.status(healthy ? 200 : 503).json({
+        status: healthy ? "healthy" : "degraded",
+        uptime: Date.now() - BOT_START_TIME,
+        connected: botFullyOperational,
+        reconnects: stats.reconnectCount,
+        failures: stats.sendFailures,
+        successes: stats.sendSuccesses,
+        failureRate: failureRate.toFixed(3),
+        lastReconnect: lastReconnectTime
+          ? new Date(lastReconnectTime).toISOString()
+          : null,
+      });
+    });
 
     // Status endpoint (legacy compatibility)
     app.get("/status", (_, res) => {
@@ -637,9 +764,10 @@ export async function startBot(config, log, authDir) {
         stats,
         cache: {
           fingerprintSet: fingerprintSet.size,
+          pendingFingerprints: pendingFingerprints.size,
           replayIdSet: replayIdSet.size,
           dirty: fingerprintDirty,
-          fingerprintFile: BOT_FINGERPRINT_FILENAME, // ✅ Show per-bot file
+          fingerprintFile: BOT_FINGERPRINT_FILENAME,
         },
         reconnect: {
           lastReconnectTime: lastReconnectTime
@@ -651,10 +779,15 @@ export async function startBot(config, log, authDir) {
           sourceGroups: config.sourceGroupIds.length,
           pipelines: config.pipelines.length,
         },
+        enhancements: {
+          maxMessageAge: `${MAX_MESSAGE_AGE / 1000}s`,
+          processingDelay: `${PROCESSING_DELAY_MIN / 1000}-${PROCESSING_DELAY_MAX / 1000}s`,
+          stableFingerprintFile: true,
+        },
       });
     });
 
-    // Groups endpoint - lists all groups with categorization and sorting
+    // Groups endpoint
     app.get("/groups", async (req, res) => {
       if (!sock || !botFullyOperational) {
         return res.status(503).json({ 
@@ -664,7 +797,6 @@ export async function startBot(config, log, authDir) {
       }
 
       try {
-        // Fetch all groups the bot is a member of
         const groupChats = await sock.groupFetchAllParticipating();
         const allGroups = Object.values(groupChats).map((chat) => ({
           id: chat.id,
@@ -673,18 +805,15 @@ export async function startBot(config, log, authDir) {
           createdAt: chat.creation ? new Date(chat.creation * 1000).toISOString() : null,
         }));
 
-        // Build category sets for classification
         const sourceSet = new Set(config.sourceGroupIds);
         const targetSet = new Set();
         
-        // Collect all target groups from all pipelines
         config.pipelines.forEach(pipeline => {
           pipeline.targetGroups.forEach(groupId => {
             targetSet.add(groupId);
           });
         });
 
-        // Categorize each group
         const categorized = allGroups.map((group) => {
           let category = "Unmonitored";
           let type = "other";
@@ -694,7 +823,6 @@ export async function startBot(config, log, authDir) {
             category = "Source Group";
             type = "source";
           } else if (targetSet.has(group.id)) {
-            // Find which pipeline(s) this group belongs to
             const pipelines = config.pipelines.filter(p => 
               p.targetGroups.includes(group.id)
             );
@@ -717,7 +845,6 @@ export async function startBot(config, log, authDir) {
           };
         });
 
-        // Sort by priority: Source → Target → Unmonitored, then by name
         const sortOrder = {
           source: 1,
           target: 2,
@@ -731,7 +858,6 @@ export async function startBot(config, log, authDir) {
           return (a.name || "").localeCompare(b.name || "");
         });
 
-        // Response
         res.json({
           success: true,
           bot: {
@@ -830,6 +956,7 @@ export async function startBot(config, log, authDir) {
 
     app.listen(statsPort, "0.0.0.0", () => {
       log.info(`📊 Stats server: http://0.0.0.0:${statsPort}/stats`);
+      log.info(`💚 Health check: http://0.0.0.0:${statsPort}/health`);
       log.info(`📱 QR scanner: http://0.0.0.0:${statsPort}/qr-scanner.html?port=${statsPort}`);
       log.info(`👥 Groups API: http://0.0.0.0:${statsPort}/groups`);
     });
@@ -858,7 +985,9 @@ export async function startBot(config, log, authDir) {
     log.info("📊 Final stats:");
     log.info(`   Processed:   ${stats.totalProcessed}`);
     log.info(`   Duplicates:  ${stats.duplicatesSkipped}`);
+    log.info(`   Too old:     ${stats.rejectedTooOld}`);
     log.info(`   Replays:     ${stats.replayIdsSkipped}`);
+    log.info(`   Races:       ${stats.racePrevented} (prevented)`);
     log.info(`   Crypto Errs: ${stats.cryptoErrors} (normal)`);
     log.info(`   Reconnects:  ${stats.reconnectCount}`);
     log.info(`   Sends OK:    ${stats.sendSuccesses}`);
@@ -877,7 +1006,11 @@ export async function startBot(config, log, authDir) {
   // ===========================================================================
 
   log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  log.info("🚀 TAXI BOT STARTING (MULTI-PIPELINE)");
+  log.info("🚀 TAXI BOT STARTING (MULTI-PIPELINE ENHANCED)");
+  log.info("   ✅ Message age validation (5min max)");
+  log.info("   ✅ Stable fingerprint filename");
+  log.info("   ✅ Processing delay randomization");
+  log.info("   ✅ /health endpoint added");
   log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
   loadFingerprints();

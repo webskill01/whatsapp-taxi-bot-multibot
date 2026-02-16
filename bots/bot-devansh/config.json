@@ -1,0 +1,22 @@
+{
+  "sourceGroupIds": [
+    
+  ],
+  "pipelines": [
+    {
+      "name": "delhi-ncr-cluster",
+      "cityScope": ["Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
+      "targetGroups": [""]
+    },
+    {
+      "name": "himachal-cluster",
+      "cityScope": ["Dehradun", "Haridwar", "Nainital","Mussoorie","Almora","Corbett","Pauri","Rudraprayag","Badrinath","Yamunotri","Gangotri","Tehri","Pithoragarh","Bageshwar","Champawat","Rudrapur","Shimla","Manali","Dharamshala","Dalhousie","Kasauli","Solan","Mandi","Hamirpur","Bilaspur","Kinnaur","Spiti","Lahaul","Sirmaur","Parwanoo","Barog","Mashobra","Rampur Bushahr"],
+      "targetGroups": [""]
+    },
+    {
+      "name": "all-mix",
+      "cityScope": ["*"],
+      "targetGroups": [""]
+    }
+  ]
+}

@@ -19,9 +19,7 @@
 // ✅ Returns routing result { wasRouted: boolean } to core/index.js
 // ✅ Fingerprint only saved if wasRouted === true
 //
-// DEBUG LOGGING:
-// ✅ Detailed validation step logging
-// ✅ Shows why messages fail validation
+// LOGGING: Concise validation and routing logs
 // =============================================================================
 
 import {
@@ -304,8 +302,8 @@ async function sendToMultipleGroupsSequential(
 
 // =============================================================================
 // MAIN MESSAGE PROCESSOR (Bot-2 MULTI-PIPELINE ROUTING)
-// ✅ NOW RETURNS: { wasRouted: boolean }
-// ✅ WITH DEBUG LOGGING
+// ✅ RETURNS: { wasRouted: boolean }
+// ✅ CONCISE LOGGING: Only failures and key events
 // =============================================================================
 
 export async function processMessage(sock, message, config, stats, log) {
@@ -337,18 +335,10 @@ export async function processMessage(sock, message, config, stats, log) {
     const senderNumber = senderJid.split("@")[0];
 
     // =========================================================================
-    // 🔍 DEBUG: START VALIDATION LOGGING
+    // VALIDATION CHECKS (concise logging - only log failures)
     // =========================================================================
-    log.info("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
-    log.info("🔍 VALIDATION CHECKS");
-    log.info("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
-    log.info(`   Message preview: "${messageContent.substring(0, 80)}${messageContent.length > 80 ? "..." : ""}"`);
-    log.info(`   Message length: ${messageContent.length} chars`);
-    log.info(`   Sender: ${senderNumber}`);
 
-    // =========================================================================
-    // VALIDATION STEP 1: Is Taxi Request?
-    // =========================================================================
+    // Check 1: Is Taxi Request?
     const isRequest = isTaxiRequest(
       messageContent,
       config.requestKeywords,
@@ -356,96 +346,51 @@ export async function processMessage(sock, message, config, stats, log) {
       config.blockedPhoneNumbers
     );
 
-    log.info(`\n   ┌─ [CHECK 1/4] Taxi Request Detection`);
-    log.info(`   │  Result: ${isRequest ? "✅ PASS" : "❌ FAIL"}`);
-    
     if (!isRequest) {
-      log.info(`   │  Reason: Message doesn't match taxi request criteria`);
-      log.info(`   │  Request keywords (sample): ${config.requestKeywords.slice(0, 5).join(", ")}`);
-      log.info(`   │  Ignore keywords (sample): ${config.ignoreIfContains.slice(0, 5).join(", ")}`);
-      log.info(`   └─ ❌ REJECTED: Not a taxi request`);
+      log.info(`❌ NOT TAXI REQUEST | ${messageContent.substring(0, 40)}...`);
       stats.rejectedNotTaxi++;
       return { wasRouted: false };
     }
-    log.info(`   └─ ✅ Message matches taxi request pattern`);
 
-    // =========================================================================
-    // VALIDATION STEP 2: Blocked Number Check
-    // =========================================================================
+    // Check 2: Blocked Number?
     const hasBlockedNumber = containsBlockedNumber(messageContent, config.blockedPhoneNumbers);
     
-    log.info(`\n   ┌─ [CHECK 2/4] Blocked Number Check`);
-    log.info(`   │  Result: ${hasBlockedNumber ? "❌ FAIL" : "✅ PASS"}`);
-    
     if (hasBlockedNumber) {
-      log.info(`   │  Reason: Message contains a blocked phone number`);
-      log.info(`   │  Sender: ${senderNumber}`);
-      log.info(`   │  Total blocked numbers: ${config.blockedPhoneNumbers.length}`);
-      log.info(`   └─ ❌ REJECTED: Blocked number detected`);
+      log.warn(`🚫 BLOCKED NUMBER | Sender: ${senderNumber}`);
       stats.rejectedBlockedNumber++;
       return { wasRouted: false };
     }
-    log.info(`   └─ ✅ No blocked numbers found`);
 
-    // =========================================================================
-    // VALIDATION STEP 3: Phone Number Detection
-    // =========================================================================
+    // Check 3: Has Phone Number?
     const hasPhone = hasPhoneNumber(messageContent);
     
-    log.info(`\n   ┌─ [CHECK 3/4] Phone Number Detection`);
-    log.info(`   │  Result: ${hasPhone ? "✅ PASS" : "❌ FAIL"}`);
-    
     if (!hasPhone) {
-      log.info(`   │  Reason: No valid phone number found in message`);
-      log.info(`   │  Message text: "${messageContent.substring(0, 100)}..."`);
-      
-      // Extract potential phone-like patterns for debugging
+      // Only show detailed debug for phone failures
       const phonePattern = /(\+?\d{1,4}[-.\s]?)?(\(?\d{1,4}\)?[-.\s]?)?[\d-.\s]{7,}/g;
       const potentialMatches = messageContent.match(phonePattern);
       
       if (potentialMatches) {
-        log.info(`   │  Potential matches found: ${potentialMatches.join(", ")}`);
-        log.info(`   │  (May contain emojis or invalid formats)`);
+        log.warn(`📵 NO PHONE (found: ${potentialMatches.join(", ")}) | ${messageContent.substring(0, 40)}...`);
       } else {
-        log.info(`   │  No number-like patterns detected at all`);
+        log.warn(`📵 NO PHONE | ${messageContent.substring(0, 40)}...`);
       }
       
-      log.info(`   └─ ❌ REJECTED: No phone number`);
       stats.rejectedNoPhone++;
       return { wasRouted: false };
     }
-    log.info(`   └─ ✅ Valid phone number detected`);
 
-    // =========================================================================
-    // VALIDATION STEP 4: Rate Limit Check
-    // =========================================================================
+    // Check 4: Rate Limit?
     const isLimited = isRateLimited(log);
     
-    log.info(`\n   ┌─ [CHECK 4/4] Rate Limit Check`);
-    log.info(`   │  Result: ${isLimited ? "❌ FAIL" : "✅ PASS"}`);
-    
     if (isLimited) {
-      log.info(`   │  Reason: Rate limit exceeded`);
-      log.info(`   └─ ❌ REJECTED: Rate limited`);
       stats.rejectedRateLimit = (stats.rejectedRateLimit || 0) + 1;
       return { wasRouted: false };
     }
-    log.info(`   └─ ✅ Within rate limits`);
 
     // =========================================================================
-    // ✅ ALL VALIDATIONS PASSED
+    // ✅ ALL VALIDATIONS PASSED - Start routing
     // =========================================================================
-    log.info("\n   ╔═══════════════════════════════════════════════════════════╗");
-    log.info("   ║  ✅ ALL VALIDATION CHECKS PASSED - ROUTING MESSAGE       ║");
-    log.info("   ╚═══════════════════════════════════════════════════════════╝");
-
-    // =========================================================================
-    // MULTI-PIPELINE ROUTING (Bot-2 CORE LOGIC PRESERVED)
-    // =========================================================================
-
-    log.info("\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
-    log.info("🔍 ROUTING MESSAGE TO PIPELINES");
-    log.info("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+    log.info(`✅ VALIDATION PASSED | Routing to pipelines...`);
 
     let routedToPipeline = false;
     let totalSent = 0;
@@ -454,10 +399,8 @@ export async function processMessage(sock, message, config, stats, log) {
     for (const pipeline of config.pipelines) {
       // ── Wildcard pipeline: always matches ──
       if (pipeline.cityScope.includes("*")) {
-        log.info(`\n✅ Pipeline Match: ${pipeline.name} (wildcard)`);
-        log.info(`🎯 Target Groups: ${pipeline.targetGroups.length}`);
+        log.info(`🎯 Pipeline: ${pipeline.name} (wildcard) | ${pipeline.targetGroups.length} targets`);
 
-        // A3: Shuffle targets
         const shuffledTargets = shuffleArray(pipeline.targetGroups);
 
         const { successCount } = await sendToMultipleGroupsSequential(
@@ -482,15 +425,11 @@ export async function processMessage(sock, message, config, stats, log) {
       );
 
       if (!pickupCity) {
-        log.info(`⏭️  Pipeline '${pipeline.name}': No matching city`);
-        continue;
+        continue; // No match, try next pipeline
       }
 
-      log.info(`\n✅ Pipeline Match: ${pipeline.name}`);
-      log.info(`📍 Pickup City: ${pickupCity}`);
-      log.info(`🎯 Target Groups: ${pipeline.targetGroups.length}`);
+      log.info(`🎯 Pipeline: ${pipeline.name} | City: ${pickupCity} | ${pipeline.targetGroups.length} targets`);
 
-      // A3: Shuffle targets
       const shuffledTargets = shuffleArray(pipeline.targetGroups);
 
       const { successCount } = await sendToMultipleGroupsSequential(
@@ -508,23 +447,20 @@ export async function processMessage(sock, message, config, stats, log) {
     }
 
     if (!routedToPipeline) {
-      log.info("\n⏭️  Message did not match any pipeline city scope");
+      log.warn(`⏭️  No pipeline matched | Cities: ${config.pipelines.map(p => p.cityScope.join(",")).join(" | ")}`);
       return { wasRouted: false };
     } else {
-      log.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      log.info(`✅ ROUTING COMPLETE: ${totalSent} messages sent`);
-      log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      log.info(`✅ ROUTING COMPLETE | ${totalSent} messages sent`);
       return { wasRouted: true };
     }
   } catch (error) {
-    log.error(`❌ Error in processMessage: ${error.message}`);
-    log.error(`   Stack: ${error.stack}`);
+    log.error(`❌ Routing error: ${error.message}`);
 
     if (
       error.message?.includes("Decryption error") ||
       error.message?.includes("Bad MAC")
     ) {
-      log.error("⚠️  Crypto error in message processing");
+      log.warn("⚠️  Crypto error (normal)");
     }
 
     return { wasRouted: false };
