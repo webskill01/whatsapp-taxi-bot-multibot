@@ -45,11 +45,19 @@
 ],
   "pipelines": [
     {
+      "name": "ludhiana-cluster",
+      "cityScope": ["Ludhiana"],
+      "targetGroups": ["120363409305280911@g.us"]
+    },
+    {
+      "name": "amritsar-cluster",
+      "cityScope": ["Amritsar", "Jalandhar"],
+      "targetGroups": ["120363406478388313@g.us"]
+    },
+    {
       "name": "all-mix",
       "cityScope": ["*"],
-      "targetGroups": [
-        "120363406787538779@g.us"
-      ]
+      "targetGroups": ["120363406787538779@g.us", "120363408771786592@g.us"]
     }
   ]
 }

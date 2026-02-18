@@ -42,11 +42,19 @@
 ],
   "pipelines": [
     {
+      "name": "delhi-ncr-cluster",
+      "cityScope": ["Delhi", "Ambala","Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
+      "targetGroups": ["120363406302662198@g.us"]
+    },
+    {
+      "name": "chandigarh-cluster",
+      "cityScope": ["Chandigarh", "Mohali", "Zirakpur"],
+      "targetGroups": ["120363407982159189@g.us"]
+    },
+    {
       "name": "all-mix",
       "cityScope": ["*"],
-      "targetGroups": [
-        "120363424849920943@g.us"
-      ]
+      "targetGroups": ["120363424849920943@g.us", "120363408598698876@g.us"]
     }
   ]
 }
