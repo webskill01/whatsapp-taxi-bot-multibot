@@ -1,12 +1,10 @@
 /**
  * ============================================================================
- * FILTER - Message Validation & City Extraction (FIXED)
+ * FILTER - Message Validation & City Extraction (SMART DETECTION FIXED)
  * ============================================================================
- * ✅ FIXES:
- *    1. extractCities() now returns BOTH pickup AND drop cities
- *    2. "X drop Y" pattern detection added (e.g., "Manali drop Chandigarh")
- *    3. "current X" pattern detection for pickup location
- *    4. Backward compatible: extractPickupCity() still works
+ * ✅ CRITICAL FIX: Fallback pattern now checks context before extracting city
+ * ✅ Prevents false positives from company names (e.g., "ABC Travels Amritsar")
+ * ✅ Only extracts cities that appear in route-relevant context
  * ============================================================================
  */
 
@@ -14,8 +12,8 @@ const ROUTE_PATTERNS = [
   /\bfrom\b.+\bto\b/i,
   /\bto\b.+\bfrom\b/i,
   /\b\w+\s+to\s+\w+/i,
-  /\b\w+\s+drop\s+\w+/i,        // NEW: "Manali drop Chandigarh"
-  /\bcurrent\s+\w+/i,             // NEW: "current Chandigarh"
+  /\b\w+\s+drop\s+\w+/i,
+  /\bcurrent\s+\w+/i,
   /pickup/i,
   /drop/i,
 ];
@@ -100,18 +98,21 @@ function getCityAliasMap() {
 
 /**
  * ============================================================================
- * CORE FIX: Extract BOTH pickup AND drop cities
+ * CORE FIX: Smart city extraction with context awareness
  * ============================================================================
  * Returns: { pickup: string|null, drop: string|null, allCities: string[] }
  *
- * Pattern priority (NEW):
+ * Pattern priority (FIXED):
  *   1. "from X to Y"           → pickup: X, drop: Y
  *   2. "Y drop current X"      → pickup: X, drop: Y
  *   3. "Y drop X"              → pickup: X, drop: Y
  *   4. "X to Y"                → pickup: X, drop: Y
  *   5. "pickup: X, drop: Y"    → pickup: X, drop: Y
  *   6. "current X"             → pickup: X
- *   7. Word scan               → pickup: first city, drop: second city (if found)
+ *   7. Context-aware scan      → ONLY if city appears near route keywords
+ *
+ * ⚠️  CRITICAL: Pattern 7 now checks context to avoid false positives like
+ *     "ABC Travels Amritsar" when the actual route is "Mohali to Patiala"
  * ============================================================================
  */
 export function extractCities(text, cities) {
@@ -190,7 +191,7 @@ export function extractCities(text, cities) {
     }
   }
 
-  // Pattern 2: "Y drop current X" → pickup: X, drop: Y (NEW)
+  // Pattern 2: "Y drop current X" → pickup: X, drop: Y
   const dropCurrentPattern = /\b([a-z\s]+?)\s+drop\s+current\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
   const dropCurrentMatch = normalized.match(dropCurrentPattern);
   
@@ -210,7 +211,7 @@ export function extractCities(text, cities) {
     }
   }
 
-  // Pattern 3: "Y drop X" → pickup: X, drop: Y (NEW)
+  // Pattern 3: "Y drop X" → pickup: X, drop: Y
   const dropPattern = /\b([a-z\s]+?)\s+drop\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
   const dropMatch = normalized.match(dropPattern);
   
@@ -273,7 +274,7 @@ export function extractCities(text, cities) {
     }
   }
 
-  // Pattern 6: "current X" → pickup: X (NEW)
+  // Pattern 6: "current X" → pickup: X
   const currentPattern = /\bcurrent\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
   const currentMatch = normalized.match(currentPattern);
   
@@ -282,9 +283,8 @@ export function extractCities(text, cities) {
     const pickupCities = scanWords(currentWords, cities);
     
     if (pickupCities.length > 0) {
-      // Still scan the rest for drop city
-      const allWords = normalized.split(/\s+/);
-      const allFoundCities = scanWords(allWords, cities);
+      // Still scan the rest for drop city using context-aware method
+      const allFoundCities = scanCitiesWithContext(normalized, cities);
       const dropCity = allFoundCities.find(c => c !== pickupCities[0]) || null;
       
       return {
@@ -295,19 +295,137 @@ export function extractCities(text, cities) {
     }
   }
 
-  // Pattern 7: Word scan fallback → first city = pickup, second city = drop
-  const words = normalized.split(/\s+/);
-  const allFoundCities = scanWords(words, cities);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Pattern 7: Context-aware fallback (FIXED TO PREVENT FALSE POSITIVES)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ONLY extract cities that appear in route-relevant context
+  // DO NOT extract cities from company names, signatures, or footer text
   
-  if (allFoundCities.length > 0) {
+  const citiesInContext = scanCitiesWithContext(normalized, cities);
+  
+  if (citiesInContext.length > 0) {
     return {
-      pickup: allFoundCities[0] || null,
-      drop: allFoundCities[1] || null,
-      allCities: allFoundCities,
+      pickup: citiesInContext[0] || null,
+      drop: citiesInContext[1] || null,
+      allCities: citiesInContext,
     };
   }
 
   return { pickup: null, drop: null, allCities: [] };
+}
+
+/**
+ * ============================================================================
+ * SMART CONTEXT-AWARE CITY SCANNER (prevents false positives)
+ * ============================================================================
+ * Only returns cities that appear near route-relevant keywords.
+ * 
+ * Example of what this PREVENTS:
+ *   "Need ride Mohali to Patiala. Contact ABC Travels Amritsar 98765..."
+ *   OLD: Would extract [Mohali, Patiala, Amritsar] ❌
+ *   NEW: Extracts [Mohali, Patiala] ✅ (Amritsar is in company name context)
+ * ============================================================================
+ */
+function scanCitiesWithContext(normalized, cities) {
+  const words = normalized.split(/\s+/);
+  const foundCities = [];
+  const aliasMap = getCityAliasMap();
+
+  // Context keywords that indicate a city is part of the route (not a company name)
+  const routeContextKeywords = [
+    'from', 'to', 'pickup', 'drop', 'current', 'need', 'want', 'required',
+    'looking', 'book', 'hire', 'rent', 'ride', 'trip', 'journey', 'travel',
+    'car', 'taxi', 'cab', 'vehicle', 'driver', 'sedan', 'suv', 'innova',
+    'swift', 'ertiga', 'tempo', 'bus', 'ac', 'non-ac'
+  ];
+
+  // Company/signature keywords that indicate a city is NOT part of the route
+  const companyContextKeywords = [
+    'travels', 'transport', 'cabs', 'services', 'tours', 'holidays',
+    'rental', 'rentals', 'contact', 'call', 'whatsapp', 'agency',
+    'booking', 'book', 'now', 'available', 'thanks', 'regards',
+    'pvt', 'ltd', 'limited', 'company', 'group'
+  ];
+
+  function isConfiguredCity(word) {
+    const wordLower = word.toLowerCase().trim();
+    
+    for (const city of cities) {
+      if (city.toLowerCase() === wordLower) {
+        return city;
+      }
+    }
+    
+    if (aliasMap[wordLower]) {
+      const mappedCity = aliasMap[wordLower];
+      if (cities.includes(mappedCity)) {
+        return mappedCity;
+      }
+    }
+    
+    return null;
+  }
+
+  function hasContextNearby(wordIndex, contextKeywords, windowSize = 5) {
+    const start = Math.max(0, wordIndex - windowSize);
+    const end = Math.min(words.length, wordIndex + windowSize + 1);
+    
+    for (let i = start; i < end; i++) {
+      if (contextKeywords.includes(words[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (let i = 0; i < words.length; i++) {
+    // Check 1-word city
+    let city = isConfiguredCity(words[i]);
+    if (city && !foundCities.includes(city)) {
+      // Verify this city is in route context, not company context
+      const hasRouteContext = hasContextNearby(i, routeContextKeywords, 5);
+      const hasCompanyContext = hasContextNearby(i, companyContextKeywords, 3);
+      
+      // Only add if:
+      // - Has route context nearby, OR
+      // - Doesn't have company context nearby (safer default)
+      if (hasRouteContext || !hasCompanyContext) {
+        foundCities.push(city);
+      }
+      continue;
+    }
+
+    // Check 2-word city
+    if (i < words.length - 1) {
+      const twoWords = words[i] + " " + words[i + 1];
+      city = isConfiguredCity(twoWords);
+      if (city && !foundCities.includes(city)) {
+        const hasRouteContext = hasContextNearby(i, routeContextKeywords, 5);
+        const hasCompanyContext = hasContextNearby(i, companyContextKeywords, 3);
+        
+        if (hasRouteContext || !hasCompanyContext) {
+          foundCities.push(city);
+        }
+        continue;
+      }
+    }
+
+    // Check 3-word city
+    if (i < words.length - 2) {
+      const threeWords = words[i] + " " + words[i + 1] + " " + words[i + 2];
+      city = isConfiguredCity(threeWords);
+      if (city && !foundCities.includes(city)) {
+        const hasRouteContext = hasContextNearby(i, routeContextKeywords, 5);
+        const hasCompanyContext = hasContextNearby(i, companyContextKeywords, 3);
+        
+        if (hasRouteContext || !hasCompanyContext) {
+          foundCities.push(city);
+        }
+      }
+    }
+  }
+
+  return foundCities;
 }
 
 /**
@@ -340,9 +458,24 @@ export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
     }
   }
 
+  // Check ignore keywords using word boundaries (not substring match)
+  // This prevents false positives like "free" matching "freeze" or "ex" matching "next"
   for (const ignoreWord of ignoreList) {
-    if (originalLower.includes(ignoreWord.toLowerCase())) {
-      return false;
+    const ignoreWordLower = ignoreWord.toLowerCase();
+    
+    // Create regex with word boundaries for single words
+    // For phrases like "good morning", check as substring
+    if (ignoreWordLower.includes(' ')) {
+      // Multi-word phrase - check as substring
+      if (originalLower.includes(ignoreWordLower)) {
+        return false;
+      }
+    } else {
+      // Single word - use word boundary regex
+      const wordBoundaryRegex = new RegExp(`\\b${ignoreWordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (wordBoundaryRegex.test(originalLower)) {
+        return false;
+      }
     }
   }
 
@@ -356,9 +489,8 @@ export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
 }
 
 /**
- * 🔒 Anti-ban hardening (ported from Bot-1)
+ * 🔒 Anti-ban hardening
  * Generates a text-based fingerprint for deduplication.
- * Same message within the same 5-minute window produces identical fingerprint.
  */
 export function getMessageFingerprint(
   text,

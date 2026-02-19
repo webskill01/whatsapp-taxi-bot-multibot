@@ -85,6 +85,7 @@ export const GLOBAL_CONFIG = {
     "empty",
     "cabcircle",
     "taxiwale",
+    "trippo",
   ].map((k) => k.toLowerCase()),
 
   /**
