@@ -1,15 +1,21 @@
 /**
  * ============================================================================
- * FILTER - Message Validation & City Extraction
+ * FILTER - Message Validation & City Extraction (FIXED)
  * ============================================================================
- * Bot-2 logic PRESERVED (pickup/drop extraction)
- * Enhanced with fingerprinting from Bot-1
+ * ✅ FIXES:
+ *    1. extractCities() now returns BOTH pickup AND drop cities
+ *    2. "X drop Y" pattern detection added (e.g., "Manali drop Chandigarh")
+ *    3. "current X" pattern detection for pickup location
+ *    4. Backward compatible: extractPickupCity() still works
+ * ============================================================================
  */
 
 const ROUTE_PATTERNS = [
   /\bfrom\b.+\bto\b/i,
   /\bto\b.+\bfrom\b/i,
   /\b\w+\s+to\s+\w+/i,
+  /\b\w+\s+drop\s+\w+/i,        // NEW: "Manali drop Chandigarh"
+  /\bcurrent\s+\w+/i,             // NEW: "current Chandigarh"
   /pickup/i,
   /drop/i,
 ];
@@ -85,7 +91,7 @@ export function containsBlockedNumber(text, blockedNumbers) {
   return false;
 }
 
-// Import city aliases from separate file (Bot-2 separation preserved)
+// Import city aliases from separate file
 import { CITY_ALIASES } from "./cityAliases.js";
 
 function getCityAliasMap() {
@@ -93,18 +99,24 @@ function getCityAliasMap() {
 }
 
 /**
- * Extracts PICKUP city from text (not drop city).
- * Pattern priority enforces pickup-first:
- *   1. "from X to Y" → X
- *   2. "X to Y"      → X
- *   3. "pickup: X"   → X
- *   4. Word scan     → first city found (fallback)
+ * ============================================================================
+ * CORE FIX: Extract BOTH pickup AND drop cities
+ * ============================================================================
+ * Returns: { pickup: string|null, drop: string|null, allCities: string[] }
+ *
+ * Pattern priority (NEW):
+ *   1. "from X to Y"           → pickup: X, drop: Y
+ *   2. "Y drop current X"      → pickup: X, drop: Y
+ *   3. "Y drop X"              → pickup: X, drop: Y
+ *   4. "X to Y"                → pickup: X, drop: Y
+ *   5. "pickup: X, drop: Y"    → pickup: X, drop: Y
+ *   6. "current X"             → pickup: X
+ *   7. Word scan               → pickup: first city, drop: second city (if found)
+ * ============================================================================
  */
-export function extractPickupCity(text, cities) {
-  if (!text) return null;
-
-  if (!cities || !Array.isArray(cities) || cities.length === 0) {
-    return null;
+export function extractCities(text, cities) {
+  if (!text || !cities || !Array.isArray(cities) || cities.length === 0) {
+    return { pickup: null, drop: null, allCities: [] };
   }
 
   const normalized = normalizeText(text);
@@ -129,99 +141,181 @@ export function extractPickupCity(text, cities) {
     return null;
   }
 
-  // Pattern 1: "from X to Y" - extract X as pickup
-  const fromToPattern =
-    /\bfrom\s+([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
-  const fromToMatch = normalized.match(fromToPattern);
+  function scanWords(words, cities) {
+    const found = [];
+    for (let i = 0; i < words.length; i++) {
+      let city = isConfiguredCity(words[i], cities);
+      if (city && !found.includes(city)) {
+        found.push(city);
+        continue;
+      }
 
+      if (i < words.length - 1) {
+        const twoWords = words[i] + " " + words[i + 1];
+        city = isConfiguredCity(twoWords, cities);
+        if (city && !found.includes(city)) {
+          found.push(city);
+          continue;
+        }
+      }
+
+      if (i < words.length - 2) {
+        const threeWords = words[i] + " " + words[i + 1] + " " + words[i + 2];
+        city = isConfiguredCity(threeWords, cities);
+        if (city && !found.includes(city)) {
+          found.push(city);
+        }
+      }
+    }
+    return found;
+  }
+
+  // Pattern 1: "from X to Y" → pickup: X, drop: Y
+  const fromToPattern = /\bfrom\s+([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
+  const fromToMatch = normalized.match(fromToPattern);
+  
   if (fromToMatch) {
     const sourceWords = fromToMatch[1].trim().split(/\s+/);
-
-    for (let i = 0; i < sourceWords.length; i++) {
-      const city = isConfiguredCity(sourceWords[i], cities);
-      if (city) return city;
-
-      if (i < sourceWords.length - 1) {
-        const twoWords = sourceWords[i] + " " + sourceWords[i + 1];
-        const city = isConfiguredCity(twoWords, cities);
-        if (city) return city;
-      }
-
-      if (i < sourceWords.length - 2) {
-        const threeWords =
-          sourceWords[i] + " " + sourceWords[i + 1] + " " + sourceWords[i + 2];
-        const city = isConfiguredCity(threeWords, cities);
-        if (city) return city;
-      }
+    const destWords = fromToMatch[2].trim().split(/\s+/);
+    
+    const pickupCities = scanWords(sourceWords, cities);
+    const dropCities = scanWords(destWords, cities);
+    
+    if (pickupCities.length > 0 || dropCities.length > 0) {
+      return {
+        pickup: pickupCities[0] || null,
+        drop: dropCities[0] || null,
+        allCities: [...pickupCities, ...dropCities.filter(c => !pickupCities.includes(c))],
+      };
     }
-
-    return null;
   }
 
-  // Pattern 2: "X to Y" - extract X as pickup
+  // Pattern 2: "Y drop current X" → pickup: X, drop: Y (NEW)
+  const dropCurrentPattern = /\b([a-z\s]+?)\s+drop\s+current\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
+  const dropCurrentMatch = normalized.match(dropCurrentPattern);
+  
+  if (dropCurrentMatch) {
+    const destWords = dropCurrentMatch[1].trim().split(/\s+/);
+    const sourceWords = dropCurrentMatch[2].trim().split(/\s+/);
+    
+    const dropCities = scanWords(destWords, cities);
+    const pickupCities = scanWords(sourceWords, cities);
+    
+    if (pickupCities.length > 0 || dropCities.length > 0) {
+      return {
+        pickup: pickupCities[0] || null,
+        drop: dropCities[0] || null,
+        allCities: [...pickupCities, ...dropCities.filter(c => !pickupCities.includes(c))],
+      };
+    }
+  }
+
+  // Pattern 3: "Y drop X" → pickup: X, drop: Y (NEW)
+  const dropPattern = /\b([a-z\s]+?)\s+drop\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
+  const dropMatch = normalized.match(dropPattern);
+  
+  if (dropMatch) {
+    const destWords = dropMatch[1].trim().split(/\s+/);
+    const sourceWords = dropMatch[2].trim().split(/\s+/);
+    
+    const dropCities = scanWords(destWords, cities);
+    const pickupCities = scanWords(sourceWords, cities);
+    
+    if (pickupCities.length > 0 || dropCities.length > 0) {
+      return {
+        pickup: pickupCities[0] || null,
+        drop: dropCities[0] || null,
+        allCities: [...pickupCities, ...dropCities.filter(c => !pickupCities.includes(c))],
+      };
+    }
+  }
+
+  // Pattern 4: "X to Y" → pickup: X, drop: Y
   const toPattern = /\b([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
   const toMatch = normalized.match(toPattern);
-
+  
   if (toMatch) {
     const sourceWords = toMatch[1].trim().split(/\s+/);
-
-    for (let i = 0; i < sourceWords.length; i++) {
-      const city = isConfiguredCity(sourceWords[i], cities);
-      if (city) return city;
-
-      if (i < sourceWords.length - 1) {
-        const twoWords = sourceWords[i] + " " + sourceWords[i + 1];
-        const city = isConfiguredCity(twoWords, cities);
-        if (city) return city;
-      }
+    const destWords = toMatch[2].trim().split(/\s+/);
+    
+    const pickupCities = scanWords(sourceWords, cities);
+    const dropCities = scanWords(destWords, cities);
+    
+    if (pickupCities.length > 0 || dropCities.length > 0) {
+      return {
+        pickup: pickupCities[0] || null,
+        drop: dropCities[0] || null,
+        allCities: [...pickupCities, ...dropCities.filter(c => !pickupCities.includes(c))],
+      };
     }
-
-    return null;
   }
 
-  // Pattern 3: "pickup: X" or "pickup X"
-  const pickupPattern =
-    /\bpickup\s*:?\s*([a-z\s]+?)(?:\s*drop|\s*to|\s*-|\s*phone|\s*\d|$)/i;
+  // Pattern 5: "pickup: X" and/or "drop: Y"
+  const pickupPattern = /\bpickup\s*:?\s*([a-z\s]+?)(?:\s*drop|\s*to|\s*-|\s*phone|\s*\d|$)/i;
+  const dropExplicitPattern = /\bdrop\s*:?\s*([a-z\s]+?)(?:\s*pickup|\s*from|\s*-|\s*phone|\s*\d|$)/i;
+  
   const pickupMatch = normalized.match(pickupPattern);
-
-  if (pickupMatch) {
-    const pickupWords = pickupMatch[1].trim().split(/\s+/).slice(0, 3);
-
-    for (let i = 0; i < pickupWords.length; i++) {
-      const city = isConfiguredCity(pickupWords[i], cities);
-      if (city) return city;
-
-      if (i < pickupWords.length - 1) {
-        const twoWords = pickupWords[i] + " " + pickupWords[i + 1];
-        const city = isConfiguredCity(twoWords, cities);
-        if (city) return city;
-      }
+  const dropExplicitMatch = normalized.match(dropExplicitPattern);
+  
+  if (pickupMatch || dropExplicitMatch) {
+    const pickupWords = pickupMatch ? pickupMatch[1].trim().split(/\s+/).slice(0, 3) : [];
+    const dropWords = dropExplicitMatch ? dropExplicitMatch[1].trim().split(/\s+/).slice(0, 3) : [];
+    
+    const pickupCities = scanWords(pickupWords, cities);
+    const dropCities = scanWords(dropWords, cities);
+    
+    if (pickupCities.length > 0 || dropCities.length > 0) {
+      return {
+        pickup: pickupCities[0] || null,
+        drop: dropCities[0] || null,
+        allCities: [...pickupCities, ...dropCities.filter(c => !pickupCities.includes(c))],
+      };
     }
-
-    return null;
   }
 
-  // Pattern 4: Scan all words (fallback)
+  // Pattern 6: "current X" → pickup: X (NEW)
+  const currentPattern = /\bcurrent\s+([a-z\s]+?)(?:\s|$|[^a-z])/i;
+  const currentMatch = normalized.match(currentPattern);
+  
+  if (currentMatch) {
+    const currentWords = currentMatch[1].trim().split(/\s+/).slice(0, 3);
+    const pickupCities = scanWords(currentWords, cities);
+    
+    if (pickupCities.length > 0) {
+      // Still scan the rest for drop city
+      const allWords = normalized.split(/\s+/);
+      const allFoundCities = scanWords(allWords, cities);
+      const dropCity = allFoundCities.find(c => c !== pickupCities[0]) || null;
+      
+      return {
+        pickup: pickupCities[0],
+        drop: dropCity,
+        allCities: allFoundCities,
+      };
+    }
+  }
+
+  // Pattern 7: Word scan fallback → first city = pickup, second city = drop
   const words = normalized.split(/\s+/);
-
-  for (let i = 0; i < words.length; i++) {
-    const city = isConfiguredCity(words[i], cities);
-    if (city) return city;
-
-    if (i < words.length - 1) {
-      const twoWords = words[i] + " " + words[i + 1];
-      const city = isConfiguredCity(twoWords, cities);
-      if (city) return city;
-    }
-
-    if (i < words.length - 2) {
-      const threeWords = words[i] + " " + words[i + 1] + " " + words[i + 2];
-      const city = isConfiguredCity(threeWords, cities);
-      if (city) return city;
-    }
+  const allFoundCities = scanWords(words, cities);
+  
+  if (allFoundCities.length > 0) {
+    return {
+      pickup: allFoundCities[0] || null,
+      drop: allFoundCities[1] || null,
+      allCities: allFoundCities,
+    };
   }
 
-  return null;
+  return { pickup: null, drop: null, allCities: [] };
+}
+
+/**
+ * Backward compatibility: extractPickupCity still works
+ */
+export function extractPickupCity(text, cities) {
+  const result = extractCities(text, cities);
+  return result.pickup;
 }
 
 /**

@@ -1,32 +1,33 @@
 // =============================================================================
-// router.js — Multi-Pipeline Routing (FIXED FOR DUAL CITY + OPTIMIZED DELAY)
+// router.js — Multi-Pipeline Message Routing (Bot-2 LOGIC + Bot-1 DELAYS)
 // =============================================================================
-// ✅ CRITICAL FIXES APPLIED:
-//    1. Accept pre-extracted text from index.js (not raw msg object)
-//    2. Use extractCities() to route BOTH pickup AND drop cities
-//    3. Processing delay moved AFTER validation (saves 2-7s on rejected msgs)
-//
 // PRESERVED FROM BOT-2:
 // ✅ Multi-pipeline matching (one message → multiple pipelines)
 // ✅ Wildcard pipeline support (cityScope: ["*"])
+// ✅ extractPickupCity for city detection
 // ✅ Loop through all pipelines, can match multiple
 //
-// ANTI-BAN FROM BOT-1:
+// ENHANCED WITH BOT-1:
 // ✅ A1: Length-scaled typing delay (1.0-1.8s)
 // ✅ A5: Weighted between-group gaps (0.8-1.5s)
 // ✅ A3: Fisher-Yates shuffle (target randomization)
 // ✅ Circuit breaker integration
 // ✅ Rate limiting
 // ✅ Per-group send cooldown
+//
+// FINGERPRINT FIX:
+// ✅ Returns routing result { wasRouted: boolean } to core/index.js
+// ✅ Fingerprint only saved if wasRouted === true
+//
+// LOGGING: Concise validation and routing logs
 // =============================================================================
 
 import {
   isTaxiRequest,
-  extractPickupCity,  // backward compat
-  extractCities,      // NEW: dual city extraction
+  extractPickupCity,
   hasPhoneNumber,
   containsBlockedNumber,
-} from "./filter.js";
+} from "./filter.js/index.js";
 
 import { GLOBAL_CONFIG } from "./globalConfig.js";
 
@@ -124,7 +125,7 @@ function handleSendSuccess() {
 }
 
 // =============================================================================
-// HUMAN BEHAVIOR DELAYS
+// HUMAN BEHAVIOR DELAYS (Bot-1 implementation)
 // =============================================================================
 
 function getRandomDelay(min, max) {
@@ -281,14 +282,15 @@ async function sendToMultipleGroupsSequential(
           log.error(`❌ → ${shortId}... FAILED (retry)`);
           handleSendFailure(log);
           stats.sendFailures++;
-          inFlightSends.delete(targetGroup); // clear stuck cooldown
         }
       } else {
         log.error(`❌ → ${shortId}... ${error.message}`);
         handleSendFailure(log);
         stats.sendFailures++;
-        inFlightSends.delete(targetGroup); // clear stuck cooldown
       }
+
+      // Clean cooldown on failure
+      inFlightSends.delete(targetGroup);
     }
   }
 
@@ -299,24 +301,41 @@ async function sendToMultipleGroupsSequential(
 }
 
 // =============================================================================
-// MAIN MESSAGE PROCESSOR (FIXED: accepts text, not msg object)
+// MAIN MESSAGE PROCESSOR (Bot-2 MULTI-PIPELINE ROUTING)
 // ✅ RETURNS: { wasRouted: boolean }
-// ✅ PROCESSING DELAY: Moved AFTER validation (optimization)
-// ✅ DUAL CITY ROUTING: Uses extractCities() to match pickup AND drop
+// ✅ CONCISE LOGGING: Only failures and key events
 // =============================================================================
 
-export async function processMessage(sock, text, sourceGroup, config, stats, log) {
+export async function processMessage(sock, message, config, stats, log) {
   try {
-    // FIX: Input is now pre-extracted text from index.js (not raw msg object)
-    if (!text || text.trim() === "") {
+    const messageType = Object.keys(message.message)[0];
+
+    // Signal protocol message bypass
+    if (
+      messageType === "protocolMessage" ||
+      messageType === "senderKeyDistributionMessage" ||
+      messageType === "reactionMessage" ||
+      messageType === "messageContextInfo"
+    ) {
       return { wasRouted: false };
     }
 
-    // Validation checks use the pre-extracted text
-    const messageContent = text;
+    // Extract message content
+    const messageContent =
+      message.message.conversation ||
+      message.message.extendedTextMessage?.text ||
+      "";
+
+    if (!messageContent) {
+      return { wasRouted: false };
+    }
+
+    const groupId = message.key.remoteJid;
+    const senderJid = message.key.participant || message.key.remoteJid;
+    const senderNumber = senderJid.split("@")[0];
 
     // =========================================================================
-    // VALIDATION CHECKS (fast — no delays yet)
+    // VALIDATION CHECKS (concise logging - only log failures)
     // =========================================================================
 
     // Check 1: Is Taxi Request?
@@ -337,7 +356,7 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     const hasBlockedNumber = containsBlockedNumber(messageContent, config.blockedPhoneNumbers);
     
     if (hasBlockedNumber) {
-      log.warn(`🚫 BLOCKED NUMBER`);
+      log.warn(`🚫 BLOCKED NUMBER | Sender: ${senderNumber}`);
       stats.rejectedBlockedNumber++;
       return { wasRouted: false };
     }
@@ -346,12 +365,12 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     const hasPhone = hasPhoneNumber(messageContent);
     
     if (!hasPhone) {
-      // Show detailed debug for phone failures
-      const phonePattern = /(\+?\d[\d\s\-().]{6,}\d)/g;
+      // Only show detailed debug for phone failures
+      const phonePattern = /(\+?\d{1,4}[-.\s]?)?(\(?\d{1,4}\)?[-.\s]?)?[\d-.\s]{7,}/g;
       const potentialMatches = messageContent.match(phonePattern);
       
       if (potentialMatches) {
-        log.warn(`📵 NO VALID PHONE — found: [${potentialMatches.join(", ")}] | ${messageContent.substring(0, 40)}...`);
+        log.warn(`📵 NO PHONE (found: ${potentialMatches.join(", ")}) | ${messageContent.substring(0, 40)}...`);
       } else {
         log.warn(`📵 NO PHONE | ${messageContent.substring(0, 40)}...`);
       }
@@ -369,22 +388,14 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     }
 
     // =========================================================================
-    // ✅ ALL VALIDATIONS PASSED — Apply processing delay NOW (optimization)
+    // ✅ ALL VALIDATIONS PASSED - Start routing
     // =========================================================================
-    log.info(`✅ VALIDATION PASSED | Applying processing delay...`);
-    
-    const processingDelay = Math.floor(Math.random() * (7000 - 2000)) + 2000; // 2-7s
-    log.info(`⏳ Processing delay: ${(processingDelay / 1000).toFixed(1)}s`);
-    await new Promise((r) => setTimeout(r, processingDelay));
-
-    log.info(`🔀 Routing to pipelines...`);
+    log.info(`✅ VALIDATION PASSED | Routing to pipelines...`);
 
     let routedToPipeline = false;
     let totalSent = 0;
 
-    // =========================================================================
-    // PIPELINE ROUTING LOOP (can match multiple pipelines)
-    // =========================================================================
+    // Bot-2: Loop through ALL pipelines - can match multiple
     for (const pipeline of config.pipelines) {
       // ── Wildcard pipeline: always matches ──
       if (pipeline.cityScope.includes("*")) {
@@ -407,27 +418,17 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
         continue;
       }
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // FIX: Extract BOTH pickup AND drop cities — match if EITHER is in scope
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      const { pickup, drop, allCities } = extractCities(
+      // ── City-based pipeline: extract pickup city ──
+      const pickupCity = extractPickupCity(
         messageContent,
         pipeline.cityScope
       );
 
-      // Match if EITHER pickup OR drop is in this pipeline's city scope
-      let matchedCity = null;
-      if (pickup && pipeline.cityScope.includes(pickup)) {
-        matchedCity = pickup;
-      } else if (drop && pipeline.cityScope.includes(drop)) {
-        matchedCity = drop;
-      }
-      
-      if (!matchedCity) {
+      if (!pickupCity) {
         continue; // No match, try next pipeline
       }
 
-      log.info(`🎯 Pipeline: ${pipeline.name} | Pickup: ${pickup || "none"} | Drop: ${drop || "none"} | Matched: ${matchedCity} | ${pipeline.targetGroups.length} targets`);
+      log.info(`🎯 Pipeline: ${pipeline.name} | City: ${pickupCity} | ${pipeline.targetGroups.length} targets`);
 
       const shuffledTargets = shuffleArray(pipeline.targetGroups);
 
@@ -446,7 +447,7 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     }
 
     if (!routedToPipeline) {
-      log.warn(`⏭️  No pipeline matched | Cities found: ${allCities?.join(", ") || "none"} | Available pipelines: ${config.pipelines.map(p => `${p.name}(${p.cityScope.join(",")})`).join(" | ")}`);
+      log.warn(`⏭️  No pipeline matched | Cities: ${config.pipelines.map(p => p.cityScope.join(",")).join(" | ")}`);
       return { wasRouted: false };
     } else {
       log.info(`✅ ROUTING COMPLETE | ${totalSent} messages sent`);

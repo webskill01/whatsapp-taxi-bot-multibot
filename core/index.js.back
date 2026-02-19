@@ -1,11 +1,12 @@
 // =============================================================================
-// core/index.js — WhatsApp Bot Core (Bot-2 FIXED)
+// core/index.js — WhatsApp Bot Core (Bot-1 STABILITY + Bot-2 ROUTING)
 // =============================================================================
-// ✅ CRITICAL FIXES APPLIED:
-//    1. Pass pre-extracted text to router (eliminates double-parse bug)
-//    2. Move processing delay AFTER validation (saves 2-7s on rejected msgs)
-//    3. Remove verbose fingerprint lock log (cleaner output)
-//
+// ✅ ENHANCEMENTS ADDED (no breaking changes):
+//    1. Message age validation (5-minute max)
+//    2. Stable fingerprint filename (botId + phone)
+//    3. Processing delay randomization (2-7s)
+//    4. /health endpoint for monitoring
+// =============================================================================
 // STABILITY FROM BOT-1:
 // ✅ Auth state loaded ONCE via closure
 // ✅ Single socket lifecycle with proper teardown
@@ -18,10 +19,23 @@
 // ✅ A4: Settling delay (5-15s after connect)
 // ✅ C2: Debounced disk write (30s)
 //
-// ROUTING:
+// ROUTING FROM BOT-2:
 // ✅ Multi-pipeline matching (one message → multiple pipelines)
 // ✅ Wildcard pipeline support (cityScope: ["*"])
-// ✅ Dual city extraction (pickup AND drop both trigger routing)
+// ✅ Pipeline-based forwarding
+//
+// HTTP ENDPOINTS:
+// ✅ /qr - PNG image for remote scanning
+// ✅ /qr/base64 - Base64 data URL
+// ✅ /stats - Full bot statistics
+// ✅ /groups - List all groups with categorization
+// ✅ /ping - Health check
+// ✅ /health - Binary health check (NEW)
+//
+// FINGERPRINT FIXES:
+// ✅ Per-bot fingerprinting (each bot has own cache)
+// ✅ Optimistic locking (add BEFORE routing, remove if fails)
+// ✅ Prevents race condition during routing phase
 // =============================================================================
 
 import {
@@ -38,22 +52,24 @@ import pino from "pino";
 import fs from "fs";
 import path from "path";
 
-import { getMessageFingerprint } from "./filter.js";
+import { getMessageFingerprint } from "./filter.js/index.js";
 import { processMessage } from "./router.js";
 import { GLOBAL_CONFIG } from "./globalConfig.js";
 
 // =============================================================================
-// CONSTANTS
+// ✅ NEW CONSTANTS FOR ENHANCEMENTS
 // =============================================================================
 const MAX_MESSAGE_AGE = 5 * 60 * 1000; // 5 minutes
+const PROCESSING_DELAY_MIN = 2000;     // 2 seconds
+const PROCESSING_DELAY_MAX = 7000;     // 7 seconds
 
 // =============================================================================
-// MAIN EXPORT
+// MAIN EXPORT (Bot-1 pattern)
 // =============================================================================
 
 export async function startBot(config, log, authDir) {
   // ===========================================================================
-  // STATE
+  // STATE - All mutable state for this bot instance
   // ===========================================================================
 
   let sock = null;
@@ -107,7 +123,7 @@ export async function startBot(config, log, authDir) {
     rejectedByReconnectAgeGate: 0,
     rejectedNotMonitored: 0,
     rejectedRateLimit: 0,
-    rejectedTooOld: 0,
+    rejectedTooOld: 0, // ✅ NEW: Track old message rejections
     sendSuccesses: 0,
     sendFailures: 0,
     reconnectCount: 0,
@@ -129,7 +145,9 @@ export async function startBot(config, log, authDir) {
 
   const BOT_START_TIME = Date.now();
   
-  // Stable fingerprint filename (botId + phone)
+  // =========================================================================
+  // ✅ ENHANCEMENT #2: STABLE FINGERPRINT FILENAME (botId + phone)
+  // =========================================================================
   const BOT_ID = config.botId || path.basename(config.botDir || process.cwd());
   const PHONE = config.botPhone?.replace(/\D/g, "") || "noPhone";
 
@@ -237,7 +255,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // MESSAGE HANDLER (FIXED: pass text to router, delay moved inside router)
+  // MESSAGE HANDLER (Bot-1 pattern + Bot-2 router + RACE FIX + ENHANCEMENTS)
   // ===========================================================================
 
   async function handleMessage(msg) {
@@ -255,7 +273,9 @@ export async function startBot(config, log, authDir) {
     const messageTimestamp = msg.messageTimestamp;
     const messageTimestampMs = messageTimestamp * 1000;
 
-    // ── Message age validation (5-minute max) ──
+    // =========================================================================
+    // ✅ ENHANCEMENT #1: MESSAGE AGE VALIDATION (5-minute max)
+    // =========================================================================
     const messageAge = Date.now() - messageTimestampMs;
 
     if (messageAge > MAX_MESSAGE_AGE) {
@@ -264,7 +284,7 @@ export async function startBot(config, log, authDir) {
       return;
     }
 
-    // ── B1: Reconnect age gate ──
+    // ── B1: Reconnect age gate (existing logic preserved) ──
     const timeSinceReconnect = Date.now() - lastReconnectTime;
     if (
       lastReconnectTime > 0 &&
@@ -284,7 +304,7 @@ export async function startBot(config, log, authDir) {
     }
     trackReplayId(msgId);
 
-    // ── Extract text (done in index.js, not router) ──
+    // ── Extract text ──
     const text =
       msg.message?.conversation ||
       msg.message?.extendedTextMessage?.text ||
@@ -324,7 +344,7 @@ export async function startBot(config, log, authDir) {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // FINGERPRINT DEDUP + OPTIMISTIC LOCK
+    // RACE CONDITION FIX: Optimistic Locking Strategy (existing, preserved)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     const timeBucket = Math.floor(messageTimestampMs / (5 * 60 * 1000));
     const fingerprint = getMessageFingerprint(text, null, timeBucket);
@@ -346,8 +366,9 @@ export async function startBot(config, log, authDir) {
 
     // OPTIMISTIC LOCK: Add to pending set IMMEDIATELY
     pendingFingerprints.set(fingerprint, Date.now());
+    log.info(`🔒 Fingerprint locked (pending): ${fingerprint}`);
 
-    // ── A4: Settling delay (only on first message) ──
+    // ── A4: Settling delay ──
     if (needsSettlingDelay) {
       needsSettlingDelay = false;
       const settleDuration =
@@ -363,9 +384,17 @@ export async function startBot(config, log, authDir) {
       await new Promise((r) => setTimeout(r, settleDuration));
     }
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // FIX: Log BEFORE validation (no processing delay wasted on rejected msgs)
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // =========================================================================
+    // ✅ ENHANCEMENT #3: PROCESSING DELAY RANDOMIZATION (2-7 seconds)
+    // =========================================================================
+    const processingDelay =
+      Math.floor(Math.random() * (PROCESSING_DELAY_MAX - PROCESSING_DELAY_MIN)) +
+      PROCESSING_DELAY_MIN;
+
+    log.info(`⏳ Processing delay: ${(processingDelay / 1000).toFixed(1)}s`);
+    await new Promise((r) => setTimeout(r, processingDelay));
+
+    // ── Log incoming message ──
     stats.totalProcessed++;
     
     log.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -375,14 +404,13 @@ export async function startBot(config, log, authDir) {
     log.info(`   Fingerprint: ${fingerprint}`);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // FIX: Pass pre-extracted text + sourceGroup to router
-    // Processing delay happens INSIDE router AFTER validation passes
+    // Process message (with validation inside router)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
     let routingResult = null;
     
     try {
-      routingResult = await processMessage(sock, text, sourceGroup, config, stats, log);
+      routingResult = await processMessage(sock, msg, config, stats, log);
     } catch (err) {
       log.error(`❌ Routing error: ${err.message}`);
       routingResult = { wasRouted: false };
@@ -424,7 +452,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // SOCKET TEARDOWN
+  // SOCKET TEARDOWN (Bot-1 pattern)
   // ===========================================================================
 
   function destroySocket(reason) {
@@ -447,7 +475,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // RECONNECT LOGIC
+  // RECONNECT LOGIC (Bot-1 pattern)
   // ===========================================================================
 
   function scheduleReconnect(reason) {
@@ -487,7 +515,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // BAILEYS CONNECTION
+  // BAILEYS CONNECTION (Bot-1 pattern)
   // ===========================================================================
 
   async function connectToWhatsApp() {
@@ -568,7 +596,7 @@ export async function startBot(config, log, authDir) {
       });
 
       // =======================================================================
-      // CONNECTION.UPDATE
+      // CONNECTION.UPDATE (Bot-1 pattern + QR storage)
       // =======================================================================
 
       sock.ev.on("connection.update", async (update) => {
@@ -599,7 +627,7 @@ export async function startBot(config, log, authDir) {
 
           if (!botFullyOperational) {
             botFullyOperational = true;
-            log.info("🎉 BOT FULLY OPERATIONAL (DUAL CITY ROUTING)");
+            log.info("🎉 BOT FULLY OPERATIONAL (ENHANCED)");
             log.info(`   📍 Source groups:  ${config.sourceGroupIds.length}`);
             log.info(`   🎯 Pipelines:      ${config.pipelines.length}`);
             config.pipelines.forEach((p) => {
@@ -611,8 +639,8 @@ export async function startBot(config, log, authDir) {
             log.info(`   🎲 Shuffling: A3 randomization enabled`);
             log.info(`   ⚡ Race prevention: Optimistic locking enabled`);
             log.info(`   ⏰ Max msg age:   ${MAX_MESSAGE_AGE / 1000}s`);
+            log.info(`   ⏱️  Process delay: ${PROCESSING_DELAY_MIN / 1000}-${PROCESSING_DELAY_MAX / 1000}s`);
             log.info(`   📂 Fingerprint file: ${BOT_FINGERPRINT_FILENAME}`);
-            log.info(`   🔀 Dual city routing: pickup AND drop both trigger pipelines`);
           }
         }
 
@@ -672,7 +700,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // STATS SERVER + ENDPOINTS (keeping existing endpoints)
+  // STATS SERVER + ENDPOINTS
   // ===========================================================================
 
   function startStatsServer() {
@@ -686,6 +714,9 @@ export async function startBot(config, log, authDir) {
 
     app.get("/ping", (_, res) => res.send("ALIVE"));
 
+    // =========================================================================
+    // ✅ ENHANCEMENT #4: /health ENDPOINT FOR MONITORING
+    // =========================================================================
     app.get("/health", (_, res) => {
       const healthy =
         botFullyOperational &&
@@ -710,6 +741,7 @@ export async function startBot(config, log, authDir) {
       });
     });
 
+    // Status endpoint (legacy compatibility)
     app.get("/status", (_, res) => {
       res.json({
         connected: botFullyOperational,
@@ -718,6 +750,7 @@ export async function startBot(config, log, authDir) {
       });
     });
 
+    // Stats endpoint
     app.get("/stats", (_, res) => {
       res.json({
         bot: {
@@ -746,10 +779,15 @@ export async function startBot(config, log, authDir) {
           sourceGroups: config.sourceGroupIds.length,
           pipelines: config.pipelines.length,
         },
+        enhancements: {
+          maxMessageAge: `${MAX_MESSAGE_AGE / 1000}s`,
+          processingDelay: `${PROCESSING_DELAY_MIN / 1000}-${PROCESSING_DELAY_MAX / 1000}s`,
+          stableFingerprintFile: true,
+        },
       });
     });
 
-    // Existing /groups endpoint preserved
+    // Groups endpoint
     app.get("/groups", async (req, res) => {
       if (!sock || !botFullyOperational) {
         return res.status(503).json({ 
@@ -849,7 +887,7 @@ export async function startBot(config, log, authDir) {
       }
     });
 
-    // QR Code endpoints
+    // QR Code PNG endpoint
     app.get("/qr", async (req, res) => {
       if (!latestQR) {
         res.status(404).send("QR code not available. Bot may already be connected or still starting.");
@@ -879,6 +917,7 @@ export async function startBot(config, log, authDir) {
       }
     });
 
+    // QR Code Base64 endpoint
     app.get("/qr/base64", async (req, res) => {
       if (!latestQR) {
         res.status(404).json({ 
@@ -924,7 +963,7 @@ export async function startBot(config, log, authDir) {
   }
 
   // ===========================================================================
-  // GRACEFUL SHUTDOWN
+  // GRACEFUL SHUTDOWN (Bot-1 pattern)
   // ===========================================================================
 
   async function gracefulShutdown(signal) {
@@ -967,11 +1006,10 @@ export async function startBot(config, log, authDir) {
   // ===========================================================================
 
   log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  log.info("🚀 TAXI BOT STARTING (DUAL CITY ROUTING FIXED)");
+  log.info("🚀 TAXI BOT STARTING (MULTI-PIPELINE ENHANCED)");
   log.info("   ✅ Message age validation (5min max)");
   log.info("   ✅ Stable fingerprint filename");
-  log.info("   ✅ Processing delay AFTER validation (optimized)");
-  log.info("   ✅ Dual city extraction: pickup AND drop");
+  log.info("   ✅ Processing delay randomization");
   log.info("   ✅ /health endpoint added");
   log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
