@@ -381,6 +381,7 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
 
     let routedToPipeline = false;
     let totalSent = 0;
+    let allCitiesFound = []; // Track all cities found across pipelines
 
     // =========================================================================
     // PIPELINE ROUTING LOOP (can match multiple pipelines)
@@ -415,6 +416,11 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
         pipeline.cityScope
       );
 
+      // Track cities found for debugging
+      if (allCities && allCities.length > 0) {
+        allCitiesFound = [...new Set([...allCitiesFound, ...allCities])];
+      }
+
       // Match if EITHER pickup OR drop is in this pipeline's city scope
       let matchedCity = null;
       if (pickup && pipeline.cityScope.includes(pickup)) {
@@ -446,7 +452,7 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     }
 
     if (!routedToPipeline) {
-      log.warn(`⏭️  No pipeline matched | Cities found: ${allCities?.join(", ") || "none"} | Available pipelines: ${config.pipelines.map(p => `${p.name}(${p.cityScope.join(",")})`).join(" | ")}`);
+      log.warn(`⏭️  No pipeline matched | Cities found: ${allCitiesFound.join(", ") || "none"} | Available pipelines: ${config.pipelines.map(p => `${p.name}(${p.cityScope.join(",")})`).join(" | ")}`);
       return { wasRouted: false };
     } else {
       log.info(`✅ ROUTING COMPLETE | ${totalSent} messages sent`);
