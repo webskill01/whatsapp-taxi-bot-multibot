@@ -253,6 +253,8 @@ export const GLOBAL_CONFIG = {
   "9592303988",
   "7710638873",
   "8557851290",
+  "7009869137",
+  "7589972658",
   "9970680118"
 ],
   // 🔒 Anti-ban hardening (Bot-1 constants)

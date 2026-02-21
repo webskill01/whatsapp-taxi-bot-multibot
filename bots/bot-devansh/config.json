@@ -22,6 +22,8 @@
     "120363416914429922@g.us",
     "120363420917001793@g.us",
     "120363426730125376@g.us",
+    "120363422706402530@g.us",
+    "120363419755566863@g.us",
     "918580501864-1629827796@g.us",
     "919419174500-1428516211@g.us",
     "919729526962-1577880456@g.us",
@@ -31,7 +33,7 @@
     {
       "name": "himachal-cluster",
       "cityScope": ["Dehradun", "Haridwar", "Nainital","Mussoorie","Almora","Corbett","Pauri","Rudraprayag","Badrinath","Yamunotri","Gangotri","Tehri","Pithoragarh","Bageshwar","Champawat","Rudrapur","Shimla","Manali","Dharamshala","Dalhousie","Kasauli","Solan","Mandi","Hamirpur","Bilaspur","Kinnaur","Spiti","Lahaul","Sirmaur","Parwanoo","Barog","Mashobra","Rampur Bushahr","Delhi"],
-      "targetGroups": ["120363424245386199@g.us","120363424197428429@g.us"]
+      "targetGroups": ["120363424245386199@g.us","120363425055330318@g.us"]
     }
   ]
 }
