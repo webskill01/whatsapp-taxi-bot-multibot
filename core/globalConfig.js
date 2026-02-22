@@ -86,6 +86,7 @@ export const GLOBAL_CONFIG = {
     "cabcircle",
     "taxiwale",
     "trippo",
+    "dont",
   ].map((k) => k.toLowerCase()),
 
   /**
@@ -255,12 +256,13 @@ export const GLOBAL_CONFIG = {
   "8557851290",
   "7009869137",
   "7589972658",
+  "8288046378",
   "9970680118"
 ],
   // 🔒 Anti-ban hardening (Bot-1 constants)
   rateLimits: {
-    hourly: 100,
-    daily: 1200,
+    hourly: 200,
+    daily: 2000,
   },
 
   validation: {
