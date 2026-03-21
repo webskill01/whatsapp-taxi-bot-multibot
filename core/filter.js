@@ -30,6 +30,10 @@ function normalizeText(text) {
     .replace(/[\u{2700}-\u{27BF}]/gu, "")
     .replace(/[\u{FE00}-\u{FE0F}]/gu, "")
     .replace(/[\u{1F900}-\u{1F9FF}]/gu, "")
+    .replace(/[\u{1F100}-\u{1F1DF}]/gu, "") // Enclosed alphanumeric supplement (covers 🆓 U+1F191)
+    .replace(/[\u{1FA00}-\u{1FAFF}]/gu, "") // Symbols & Pictographs Extended-A
+    .replace(/[*`~]/g, " ")                 // WhatsApp bold/code/strikethrough markers
+    .replace(/_/g, " ")                     // WhatsApp italic markers
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -452,29 +456,49 @@ export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
   const normalized = normalizeText(text);
   const originalLower = text.toLowerCase();
 
+  // Strip WhatsApp formatting symbols (* ` ~ _) for keyword matching.
+  // Replace with space (not empty string) to preserve word boundaries.
+  // Note: _ is a word character in regex, so _available_ would bypass \b without this.
+  const cleanedText = originalLower.replace(/[*`~]/g, " ").replace(/_/g, " ");
+
   if (blockedNumbers && blockedNumbers.length > 0) {
     if (containsBlockedNumber(text, blockedNumbers)) {
       return false;
     }
   }
 
-  // Check ignore keywords using word boundaries (not substring match)
-  // This prevents false positives like "free" matching "freeze" or "ex" matching "next"
+  // Check ignore keywords
   for (const ignoreWord of ignoreList) {
     const ignoreWordLower = ignoreWord.toLowerCase();
-    
-    // Create regex with word boundaries for single words
-    // For phrases like "good morning", check as substring
+
     if (ignoreWordLower.includes(' ')) {
-      // Multi-word phrase - check as substring
-      if (originalLower.includes(ignoreWordLower)) {
+      // Multi-word phrase — substring match on cleanedText
+      if (cleanedText.includes(ignoreWordLower)) {
         return false;
       }
     } else {
-      // Single word - use word boundary regex
-      const wordBoundaryRegex = new RegExp(`\\b${ignoreWordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      if (wordBoundaryRegex.test(originalLower)) {
-        return false;
+      // Single word — detect if it contains non-ASCII characters (Unicode, emoji)
+      const hasNonAscii = /[^\x00-\x7F]/.test(ignoreWordLower);
+
+      if (hasNonAscii) {
+        // \b is ASCII-only and never fires on Unicode chars.
+        // Use Unicode property escapes (\p{L} = any letter, \p{N} = any digit) with negative
+        // lookahead/lookbehind to enforce real word boundaries across all scripts and emoji.
+        // Requires the `u` flag — supported in Node.js 10+ (project requires 18+).
+        const escapedKeyword = ignoreWordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const unicodeBoundaryRegex = new RegExp(
+          `(?<![\\p{L}\\p{N}])${escapedKeyword}(?![\\p{L}\\p{N}])`,
+          'u'
+        );
+        if (unicodeBoundaryRegex.test(cleanedText)) {
+          return false;
+        }
+      } else {
+        // ASCII word — word boundary regex on cleanedText (formatting already stripped)
+        const wordBoundaryRegex = new RegExp(`\\b${ignoreWordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (wordBoundaryRegex.test(cleanedText)) {
+          return false;
+        }
       }
     }
   }

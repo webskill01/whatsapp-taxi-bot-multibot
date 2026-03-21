@@ -273,6 +273,7 @@ export async function startBot(config, log, authDir) {
       const reconnectMessageAge = Date.now() - messageTimestampMs;
       if (reconnectMessageAge > GLOBAL_CONFIG.reconnect.strictAgeMs) {
         stats.rejectedByReconnectAgeGate++;
+        log.warn(`⏰ [B1] Age gate dropped msg: ${Math.floor(reconnectMessageAge / 1000)}s old (${Math.floor(timeSinceReconnect / 1000)}s since reconnect)`);
         return;
       }
     }
@@ -520,15 +521,24 @@ export async function startBot(config, log, authDir) {
         level: "warn",
         hooks: {
           logMethod(inputArgs, method) {
-            const msg = inputArgs[0];
+            // Baileys logs with two patterns:
+            //   logger.warn("string message")           → inputArgs[0] is a string
+            //   logger.error({key, err}, "message")     → inputArgs[0] is an object, [1] is the string
+            // Build a single lowercase string covering both so matching is always case-insensitive.
+            const msgStr = (
+              (typeof inputArgs[0] === "string" ? inputArgs[0] : "") +
+              " " +
+              (typeof inputArgs[1] === "string" ? inputArgs[1] : "")
+            ).toLowerCase();
+
             if (
-              typeof msg === "string" &&
-              (msg.includes("closing session") ||
-                msg.includes("decrypt") ||
-                msg.includes("bad mac") ||
-                msg.includes("failed to decrypt") ||
-                msg.includes("InvalidMessageException") ||
-                msg.includes("No session found"))
+              msgStr.includes("closing session") ||
+              msgStr.includes("closing open session") ||
+              msgStr.includes("prekey bundle") ||
+              msgStr.includes("decrypt") ||
+              msgStr.includes("bad mac") ||
+              msgStr.includes("no session found") ||
+              msgStr.includes("invalidmessageexception")
             ) {
               stats.cryptoErrors++;
               return;

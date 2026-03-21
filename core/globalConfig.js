@@ -103,8 +103,6 @@ export const GLOBAL_CONFIG = {
     "ਫਰੀ",
     "फ्री",
     "drop hove",
-    "_free",
-    "*free",
     "Resort",
     "Hotels",
     "Hotel",
@@ -112,6 +110,10 @@ export const GLOBAL_CONFIG = {
     "jaa rhi",
     "No forward",
     "sk travels",
+    "cheaptravel",
+    "🆓",
+    "rooms",
+    "ramjilal",
   ].map((k) => k.toLowerCase()),
 
   // ==========================================================================
@@ -157,7 +159,9 @@ export const GLOBAL_CONFIG = {
     "9781410993", "9217979188", "8054001213", "7428219017", "7505802292",
     "7807044552", "8278493395", "7733031077", "7340250307", "6283566137",
     "9814444633", "7837891404", "7023581448", "9636572083", "8557913227",
-    "8796022037", "7009078558", "9464773907", 
+    "8796022037", "7009078558", "9464773907", "9914732753", "7526817339",
+    "9053834188", "9888748003", "9988243191", "7657822557", "9914735968",
+    "7837982662", "9289750755", "7814615932",
   ],
 
   // 🔒 Anti-ban hardening (Bot-1 constants)
@@ -209,9 +213,9 @@ export const GLOBAL_CONFIG = {
 
   // 🔒 B1 + A4: Reconnect protection
   reconnect: {
-    strictAgeMs: 10000, // B1: 10s age window
-    strictWindowDuration: 30000, // B1: Enforce for 30s after reconnect
-    settlingMin: 5000, // A4: 5-15s settling delay
-    settlingMax: 15000,
+    strictAgeMs: 10000,       // B1: drop messages >10s old after reconnect
+    strictWindowDuration: 15000, // B1: enforce for 15s after reconnect (reduced from 30s)
+    settlingMin: 2000,        // A4: 2-5s settling delay (reduced from 5-15s)
+    settlingMax: 5000,
   },
 };
