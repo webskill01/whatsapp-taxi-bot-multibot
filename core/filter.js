@@ -450,7 +450,7 @@ export function extractFirstCity(text, cities) {
 /**
  * Checks if message is a valid taxi request.
  */
-export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
+export function isTaxiRequest(text, keywords, ignoreList) {
   if (!text) return false;
 
   const normalized = normalizeText(text);
@@ -460,12 +460,6 @@ export function isTaxiRequest(text, keywords, ignoreList, blockedNumbers = []) {
   // Replace with space (not empty string) to preserve word boundaries.
   // Note: _ is a word character in regex, so _available_ would bypass \b without this.
   const cleanedText = originalLower.replace(/[*`~]/g, " ").replace(/_/g, " ");
-
-  if (blockedNumbers && blockedNumbers.length > 0) {
-    if (containsBlockedNumber(text, blockedNumbers)) {
-      return false;
-    }
-  }
 
   // Check ignore keywords
   for (const ignoreWord of ignoreList) {

@@ -161,7 +161,10 @@ export const GLOBAL_CONFIG = {
     "9814444633", "7837891404", "7023581448", "9636572083", "8557913227",
     "8796022037", "7009078558", "9464773907", "9914732753", "7526817339",
     "9053834188", "9888748003", "9988243191", "7657822557", "9914735968",
-    "7837982662", "9289750755", "7814615932",
+    "7837982662", "9289750755", "7814615932", "7428747498", "8222860271",
+    "8427023244", "9289585304", "6284664543", "8796902582", "7505979832",
+    "7533945774", "8968019558", "9115543258", "7888862814", "8222801005",
+    "9992050407", "8198882000", "9878235035", "9915138099"
   ],
 
   // 🔒 Anti-ban hardening (Bot-1 constants)
@@ -214,8 +217,8 @@ export const GLOBAL_CONFIG = {
   // 🔒 B1 + A4: Reconnect protection
   reconnect: {
     strictAgeMs: 10000,       // B1: drop messages >10s old after reconnect
-    strictWindowDuration: 15000, // B1: enforce for 15s after reconnect (reduced from 30s)
-    settlingMin: 2000,        // A4: 2-5s settling delay (reduced from 5-15s)
-    settlingMax: 5000,
+    strictWindowDuration: 30000, // B1: enforce for 30s after reconnect
+    settlingMin: 5000,        // A4: 5-15s settling delay 
+    settlingMax: 15000,
   },
 };

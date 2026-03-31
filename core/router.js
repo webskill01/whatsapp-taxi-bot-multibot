@@ -323,12 +323,11 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     const isRequest = isTaxiRequest(
       messageContent,
       config.requestKeywords,
-      config.ignoreIfContains,
-      config.blockedPhoneNumbers
+      config.ignoreIfContains
     );
 
     if (!isRequest) {
-      log.info(`❌ NOT TAXI REQUEST | ${messageContent.substring(0, 40)}...`);
+      log.info(`❌ NOT TAXI REQUEST`);
       stats.rejectedNotTaxi++;
       return { wasRouted: false };
     }
