@@ -10,7 +10,7 @@
 //   bot-delhi   → starts at   0s  (port 3001)
 //   bot-sachin  → starts at  20s  (port 3002)
 //   bot-manny   → starts at  40s  (port 3003)
-//   bot-devansh → starts at  60s  (port 3004)  ← was wrongly 40s, now fixed
+//   bot-aayush → starts at  60s  (port 3004)  ← was wrongly 40s, now fixed
 //
 // Adding a new bot = duplicate the nearest block, update:
 //   name, script, log paths, STATS_PORT, start_delay (+20000 from last)
@@ -148,11 +148,11 @@ module.exports = {
     },
 
     // =========================================================================
-    // bot-devansh  [starts at 60s]  ← FIXED: was incorrectly 40s (same as manny)
+    // bot-aayush  [starts at 60s]  ← FIXED: was incorrectly 40s (same as manny)
     // =========================================================================
     {
-      name: "bot-devansh",
-      script: "./bots/bot-devansh/start.js",
+      name: "bot-aayush",
+      script: "./bots/bot-aayush/start.js",
       cwd: "./",
 
       instances: 1,
@@ -174,8 +174,8 @@ module.exports = {
       start_delay: 60000,           // 20s after bot-manny ← FIXED from 40000
 
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      error_file: "./logs/bot-devansh-error.log",
-      out_file: "./logs/bot-devansh-out.log",
+      error_file: "./logs/bot-aayush-error.log",
+      out_file: "./logs/bot-aayush-out.log",
       merge_logs: true,
       log_type: "raw",
 
@@ -183,7 +183,7 @@ module.exports = {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
         NODE_OPTIONS: "--max-old-space-size=480",
-        BOT_NAME: "bot-devansh",
+        BOT_NAME: "bot-aayush",
         STATS_PORT: "3004",
       },
     },
