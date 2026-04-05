@@ -45,6 +45,13 @@
     "120363420361009960@g.us",
     "120363406998740376@g.us",
     "120363425602090296@g.us",
+    "120363403639891659@g.us",
+    "120363402548025700@g.us",
+    "120363406711472304@g.us",
+    "120363403878707827@g.us",
+    "120363409237520679@g.us",
+    "120363423569438244@g.us",
+    "120363424902874181@g.us",
     "918580501864-1629827796@g.us",
     "919419174500-1428516211@g.us",
     "919729526962-1577880456@g.us",
@@ -54,17 +61,12 @@
     {
       "name": "himachal/delhi-cluster",
       "cityScope": ["Dehradun", "Haridwar", "Nainital","Mussoorie","Almora","Corbett","Pauri","Rudraprayag","Badrinath","Yamunotri","Gangotri","Tehri","Pithoragarh","Bageshwar","Champawat","Rudrapur","Shimla","Manali","Dharamshala","Dalhousie","Kasauli","Solan","Mandi","Hamirpur","Bilaspur","Kinnaur","Spiti","Lahaul","Sirmaur","Parwanoo","Barog","Mashobra","Rampur Bushahr","Delhi"],
-      "targetGroups": ["120363424245386199@g.us"]
+      "targetGroups": ["120363424245386199@g.us","120363425055330318@g.us"]
     },
     {
-      "name": "himachal-cluster",
-      "cityScope": ["Dehradun", "Haridwar", "Nainital","Mussoorie","Almora","Corbett","Pauri","Rudraprayag","Badrinath","Yamunotri","Gangotri","Tehri","Pithoragarh","Bageshwar","Champawat","Rudrapur","Shimla","Manali","Dharamshala","Dalhousie","Kasauli","Solan","Mandi","Hamirpur","Bilaspur","Kinnaur","Spiti","Lahaul","Sirmaur","Parwanoo","Barog","Mashobra","Rampur Bushahr"],
+      "name": "himachal/delhi_ncr-cluster",
+      "cityScope": ["Dehradun", "Haridwar", "Nainital","Mussoorie","Almora","Corbett","Pauri","Rudraprayag","Badrinath","Yamunotri","Gangotri","Tehri","Pithoragarh","Bageshwar","Champawat","Rudrapur","Shimla","Manali","Dharamshala","Dalhousie","Kasauli","Solan","Mandi","Hamirpur","Bilaspur","Kinnaur","Spiti","Lahaul","Sirmaur","Parwanoo","Barog","Mashobra","Rampur Bushahr","Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
       "targetGroups": ["120363425055330318@g.us"]
-    },
-    {
-      "name": "delhi-ncr-cluster",
-      "cityScope": ["Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
-      "targetGroups": ["120363424034694148@g.us"]
     },
     {
       "name": "all-mix",
