@@ -60,3 +60,5 @@ temp/
 # Build outputs
 dist/
 build/
+
+docs/
