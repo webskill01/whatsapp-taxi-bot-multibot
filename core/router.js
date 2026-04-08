@@ -180,16 +180,26 @@ async function sendToMultipleGroupsSequential(
   text,
   pipelineName,
   stats,
-  log
+  log,
+  sentGroups = null
 ) {
   if (circuitBreaker.isOpen) {
     log.warn("🔴 Circuit breaker OPEN — aborting send");
     return { successCount: 0, totalTargets: targets.length };
   }
 
+  // Filter out groups already sent to in this message's routing cycle
+  const dedupedTargets = sentGroups
+    ? targets.filter((groupId) => !sentGroups.has(groupId))
+    : targets;
+
+  if (dedupedTargets.length < targets.length) {
+    log.info(`⏭️  [${pipelineName}] Skipped ${targets.length - dedupedTargets.length} target(s) already sent by another pipeline`);
+  }
+
   // Filter out groups still in cooldown
   const now = Date.now();
-  const readyTargets = targets.filter((groupId) => {
+  const readyTargets = dedupedTargets.filter((groupId) => {
     const lastSend = inFlightSends.get(groupId);
     return (
       !lastSend || now - lastSend >= GLOBAL_CONFIG.deduplication.sendCooldown
@@ -265,6 +275,7 @@ async function sendToMultipleGroupsSequential(
       handleSendSuccess();
       stats.sendSuccesses++;
       successCount++;
+      if (sentGroups) sentGroups.add(targetGroup);
     } catch (error) {
       const sendTime = ((Date.now() - sendStartTime) / 1000).toFixed(2);
 
@@ -277,6 +288,7 @@ async function sendToMultipleGroupsSequential(
           handleSendSuccess();
           stats.sendSuccesses++;
           successCount++;
+          if (sentGroups) sentGroups.add(targetGroup);
         } catch (retryError) {
           log.error(`❌ → ${shortId}... FAILED (retry)`);
           handleSendFailure(log);
@@ -381,6 +393,7 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
     let routedToPipeline = false;
     let totalSent = 0;
     let allCitiesFound = []; // Track all cities found across pipelines
+    const sentGroups = new Set(); // Cross-pipeline dedup: skip groups already sent to
 
     // =========================================================================
     // PIPELINE ROUTING LOOP (can match multiple pipelines)
@@ -398,7 +411,8 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
           messageContent,
           pipeline.name,
           stats,
-          log
+          log,
+          sentGroups
         );
 
         totalSent += successCount;
@@ -442,7 +456,8 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
         messageContent,
         pipeline.name,
         stats,
-        log
+        log,
+        sentGroups
       );
 
       totalSent += successCount;
