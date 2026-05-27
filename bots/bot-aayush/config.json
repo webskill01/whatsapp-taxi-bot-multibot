@@ -70,9 +70,9 @@
       "targetGroups": ["120363425055330318@g.us"]
     },
     {
-      "name": "all-mix",
-      "cityScope": ["*"],
-      "targetGroups": ["120363427270927558@g.us"]
+      "name": "Punjab-cluster",
+      "cityScope": ["Patiala","Zirakpur","Mohali","Jalandhar","Amritsar","Ludhiana","Chandigarh","Bathinda","Kotakpur","Faridkot","Malerkotla"],
+      "targetGroups": ["120363408778004731@g.us"]
     }
   ]
 }
