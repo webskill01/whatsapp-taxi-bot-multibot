@@ -703,6 +703,18 @@ export async function startBot(config, log, authDir) {
     );
     const app = express();
 
+    // CORS: the dashboard (index.html) is served by ONE bot's port but fetches
+    // /stats from EVERY bot port. Those are cross-origin requests; without these
+    // headers the browser blocks the responses and every other bot card shows
+    // "Offline" with no details. Allow any origin to read the read-only endpoints.
+    app.use((req, res, next) => {
+      res.header("Access-Control-Allow-Origin", "*");
+      res.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.header("Access-Control-Allow-Headers", "Content-Type");
+      if (req.method === "OPTIONS") return res.sendStatus(204);
+      next();
+    });
+
     app.use(express.static("public"));
 
     app.get("/ping", (_, res) => res.send("ALIVE"));

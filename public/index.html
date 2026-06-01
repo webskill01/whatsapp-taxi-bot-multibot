@@ -494,6 +494,20 @@
       return '🤖';
     }
 
+    function renderPipelineInfo(stats) {
+      if (!stats.config) return '';
+      const pipelineCount = stats.config.pipelines ?? 0;
+      const sourceCount = stats.config.sourceGroups ?? 0;
+      const uptime = stats.uptime || '—';
+      return `
+        <div class="pipeline-info">
+          <div><strong>🎯 Pipelines:</strong> ${pipelineCount}</div>
+          <div><strong>📡 Source Groups:</strong> ${sourceCount}</div>
+          <div><strong>⏱️ Uptime:</strong> ${uptime}</div>
+        </div>
+      `;
+    }
+
     function formatBotCard(stats) {
       const port = stats.port;
       let statusClass = 'loading';
@@ -513,16 +527,8 @@
         statusText = '⏳ Starting...';
       }
 
-      // Pipeline info (Bot-2 specific)
-      let pipelineHTML = '';
-      if (stats.config?.pipelines) {
-        const pipelineCount = stats.config.pipelines;
-        pipelineHTML = `
-          <div class="pipeline-info">
-            <strong>🎯 Pipelines: ${pipelineCount}</strong>
-          </div>
-        `;
-      }
+      // Pipeline / config info (Bot-2 specific)
+      const pipelineHTML = renderPipelineInfo(stats);
 
       // Stats display
       let statsHTML = '';
@@ -588,9 +594,9 @@
           </div>
           
           <div class="status ${statusClass}" data-status>${statusText}</div>
-          
-          ${pipelineHTML}
-          
+
+          <div data-pipeline>${pipelineHTML}</div>
+
           <div data-stats>${statsHTML}</div>
           
           <div data-cache>${cacheHTML}</div>
@@ -642,6 +648,12 @@
 
         statusEl.className = `status ${statusClass}`;
         statusEl.textContent = statusText;
+      }
+
+      // Update pipeline / config info (keeps uptime fresh)
+      const pipelineEl = card.querySelector('[data-pipeline]');
+      if (pipelineEl) {
+        pipelineEl.innerHTML = renderPipelineInfo(stats);
       }
 
       // Update stats
