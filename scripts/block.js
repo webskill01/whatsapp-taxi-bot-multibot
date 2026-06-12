@@ -13,8 +13,10 @@
  *   node scripts/block.js --check 9876543210         Is this number already blocked? (no write)
  *   node scripts/block.js --list                     Show counts
  *
- * Numbers are normalized to bare 10 digits (strips +91 / spaces / dashes).
- * Restart the bot(s) after editing for changes to take effect.
+ * Accepts numbers in any format, quoted OR split across shell args:
+ *   9053648269   +918920836257   "+91 77079 30908"   +91 77079 30908
+ *   91 88207 36257   079...(leading 0)   comma,separated,list
+ * All are normalized to bare 10 digits. Restart the bot(s) after editing.
  * ============================================================================
  */
 
@@ -38,26 +40,55 @@ function save(data) {
   writeFileSync(DATA_PATH, JSON.stringify(data, null, 2) + "\n", "utf8");
 }
 
-/** Strip everything but digits, drop a leading 91 country code on 12-digit inputs. */
-function normNumber(raw) {
-  let d = String(raw).replace(/\D/g, "");
-  if (d.length === 12 && d.startsWith("91")) d = d.slice(2);
-  return d;
+/**
+ * Parse phone numbers from raw CLI args into bare 10-digit numbers.
+ *
+ * Handles all of these, whether quoted or split across multiple shell args:
+ *   9053648269            -> 9053648269
+ *   +918920836257         -> 8920836257
+ *   "+91 77079 30908"     -> 7707930908
+ *   +91 77079 30908       -> 7707930908   (3 separate args, regrouped)
+ *   9876543210 9123456789 -> two numbers
+ *   a,comma,list          -> split on commas
+ *
+ * Strategy: flatten args -> split on commas -> strip each piece to digits ->
+ * greedily accumulate digit-chunks until a number resolves: 10 digits as-is,
+ * a leading 0 at 11 digits, or a leading 91 country code at 12 digits.
+ */
+function parseNumbers(rawArgs) {
+  const chunks = rawArgs
+    .flatMap((a) => String(a).split(","))
+    .map((t) => t.replace(/\D/g, ""))
+    .filter(Boolean);
+
+  const numbers = [];
+  const invalid = [];
+  let buf = "";
+
+  for (const chunk of chunks) {
+    buf += chunk;
+    if (buf.length === 10) {
+      numbers.push(buf); buf = "";
+    } else if (buf.length === 11 && buf.startsWith("0")) {
+      numbers.push(buf.slice(1)); buf = "";
+    } else if (buf.length === 12 && buf.startsWith("91")) {
+      numbers.push(buf.slice(2)); buf = "";
+    } else if (buf.length > 12) {
+      invalid.push(buf); buf = "";          // overshot — can't resolve this run
+    }
+    // else: still shorter than a full number, keep accumulating
+  }
+  if (buf) invalid.push(buf);               // leftover digits that never formed a number
+  return { numbers, invalid };
 }
 
-function isValidNumber(d) {
-  return d.length === 10;
-}
-
-/** Add normalized numbers to a field, reporting added vs already-present. */
-function addNumbers(data, field, inputs) {
+/** Add parsed numbers to a field, reporting added vs already-present vs invalid. */
+function addNumbers(data, field, rawArgs) {
+  const { numbers, invalid } = parseNumbers(rawArgs);
   const set = new Set(data[field]);
   const added = [];
   const dupes = [];
-  const invalid = [];
-  for (const raw of inputs) {
-    const d = normNumber(raw);
-    if (!isValidNumber(d)) { invalid.push(`${raw} -> "${d}"`); continue; }
+  for (const d of numbers) {
     if (set.has(d)) { dupes.push(d); continue; }
     set.add(d);
     added.push(d);
@@ -76,7 +107,7 @@ function report(field, { added, dupes, invalid }) {
 const args = process.argv.slice(2);
 
 if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
-  console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(2, 21).join("\n").replace(/^ \* ?/gm, ""));
+  console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(2, 22).join("\n").replace(/^ \* ?/gm, ""));
   process.exit(0);
 }
 
@@ -90,13 +121,15 @@ if (args[0] === "--list") {
 }
 
 if (args[0] === "--check") {
-  const d = normNumber(args[1] || "");
-  if (!isValidNumber(d)) { console.error(`Not a valid 10-digit number: "${args[1]}"`); process.exit(1); }
-  const inNums = data.blockedPhoneNumbers.includes(d);
-  const inSenders = data.blockedSenders.includes(d);
+  const { numbers, invalid } = parseNumbers(args.slice(1));
+  if (numbers.length !== 1 || invalid.length) {
+    console.error(`Provide exactly one valid number to check. Parsed: ${[...numbers, ...invalid.map(i => i + "(invalid)")].join(", ") || "(none)"}`);
+    process.exit(1);
+  }
+  const d = numbers[0];
   console.log(`${d}:`);
-  console.log(`  blockedPhoneNumbers : ${inNums ? "YES" : "no"}`);
-  console.log(`  blockedSenders      : ${inSenders ? "YES" : "no"}`);
+  console.log(`  blockedPhoneNumbers : ${data.blockedPhoneNumbers.includes(d) ? "YES" : "no"}`);
+  console.log(`  blockedSenders      : ${data.blockedSenders.includes(d) ? "YES" : "no"}`);
   process.exit(0);
 }
 
