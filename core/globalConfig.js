@@ -6,6 +6,43 @@
  * Bot-2 structure + Bot-1 anti-ban hardening constants
  */
 
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Volatile block/ignore data lives in core/blocked-data.json — gitignored so it
+ * can be edited directly on the VPS without a git push. See scripts/block.js for
+ * a dedup-safe way to add entries.
+ *
+ * Fail-CLOSED on purpose: if the file is missing or malformed we throw instead of
+ * falling back to empty lists. An empty ignore/block list would make the bot
+ * forward EVERYTHING (spam + ban risk), so refusing to start is the safer default.
+ */
+function loadBlockedData() {
+  const filePath = join(__dirname, "blocked-data.json");
+  let data;
+  try {
+    data = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (err) {
+    throw new Error(
+      `[globalConfig] Could not load ${filePath}: ${err.message}\n` +
+      `This file holds blockedPhoneNumbers / blockedSenders / ignoreIfContains and is ` +
+      `gitignored. Copy it onto this machine before starting the bot.`
+    );
+  }
+  for (const key of ["blockedPhoneNumbers", "blockedSenders", "ignoreIfContains"]) {
+    if (!Array.isArray(data[key])) {
+      throw new Error(`[globalConfig] blocked-data.json is missing or malformed array: "${key}"`);
+    }
+  }
+  return data;
+}
+
+const _blockedData = loadBlockedData();
+
 export const GLOBAL_CONFIG = {
   /**
    * Taxi request keywords (normalized to lowercase)
@@ -45,154 +82,24 @@ export const GLOBAL_CONFIG = {
   ].map((k) => k.toLowerCase()),
 
   /**
-   * Ignore keywords (normalized to lowercase)
+   * Ignore keywords — loaded from core/blocked-data.json (gitignored).
+   * NFC-normalized so precomposed/decomposed Unicode variants (Hindi/Punjabi
+   * nukta letters) match regardless of which form the sender's keyboard emits.
    */
-  ignoreIfContains: [
-    "good morning",
-    "good night",
-    "gm",
-    "gn",
-    "free",
-    "fre",
-    "ferr",
-    "frre",
-    "link",
-    "join",
-    "exchange",
-    "xchange",
-    "ex",
-    "exx",
-    "khali",
-    "khaali",
-    "khadi",
-    "khari",
-    "sale",
-    "available",
-    "avialable",
-    "loan",
-    "fraud",
-    "frod",
-    "frode",
-    "ford",
-    "honi",
-    "kali",
-    "hone",
-    "hoto",
-    "खाली",
-    "खड़ी",
-    "ਖਾਲੀ",
-    "ਖੜੀ",
-    "empty",
-    "cabcircle",
-    "taxiwale",
-    "play",
-    "cabzee",
-    "Detail",
-    "Details",
-    "Cabzzy",
-    "dont",
-    "don't forward",
-    "don't",
-    "trippo",
-    "uber",
-    "ola",
-    "train",
-    "holi",
-    "ਫ੍ਰੀ",
-    "ਫ਼ਰੀ",
-    "ਫਰੀ",
-    "फ्री",
-    "drop hove",
-    "Resort",
-    "Hotels",
-    "Hotel",
-    "ja rhi",
-    "jaa rhi",
-    "No forward",
-    "sk travels",
-    "cheaptravel",
-    "🆓",
-    "rooms",
-    "ramjilal",
-    "add",
-    "ho to",
-    "online",
-    "challan",
-    "freee"
-  ].map((k) => k.toLowerCase()),
+  ignoreIfContains: _blockedData.ignoreIfContains.map((k) => k.normalize("NFC").toLowerCase()),
 
   // ==========================================================================
-  // GLOBALLY BLOCKED PHONE NUMBERS
-  // Add 10-digit numbers here. Country code variants checked automatically.
+  // GLOBALLY BLOCKED PHONE NUMBERS — loaded from core/blocked-data.json
+  // 10-digit numbers; country code variants checked automatically.
   // ==========================================================================
-  blockedPhoneNumbers: [
-    "6280262188", "6350027596", "7038815251", "7040404032", "7065843991",
-    "7083722160", "7218048031", "7219763087", "7249079436", "7264002818",
-    "7276450081", "7276466165", "7300364237", "7330100076", "7340581409",
-    "7340756612", "7366053128", "7385717302", "7410750646", "7494979167",
-    "7498629505", "7499483607", "7507056296", "7526823870", "7665254839",
-    "7666102901", "7677625316", "7678276603", "7696885288", "7696990621",
-    "7710638873", "7738965005", "7741052020", "7742964241", "7774929282",
-    "7779040298", "7798434103", "7827147818", "7857909300", "7887567818",
-    "7888387141", "7888749316", "7976843824", "7977480721", "7977518371",
-    "8000092458", "8000183633", "8054504845", "8054609766", "8058211962",
-    "8080403095", "8087337243", "8108969313", "8146157430", "8146915221",
-    "8149316681", "8149983233", "8153999786", "8180810231", "8196831863",
-    "8208040563", "8208652467", "8233511962", "8264684995", "8279766758",
-    "8283841812", "8290142875", "8329450813", "8376045298", "8380908901",
-    "8421434099", "8427467052", "8446307243", "8446811611", "8484863823",
-    "8530062015", "8530421433", "8530787963", "8554843405", "8556833818",
-    "8556979472", "8619095157", "8669306054", "8767144130", "8793270753",
-    "8872677262", "8872712602", "8879105010", "9053581010", "9067346561",
-    "9096620733", "9119507508", "9119552594", "9121009532", "9168405486",
-    "9172065190", "9209295695", "9209869707", "9214847225", "9220398853",
-    "9226771879", "9284383939", "9284423487", "9284505037", "9300079100",
-    "9325892048", "9326268168", "9356534101", "9370889090", "9371507508",
-    "9373300810", "9373322917", "9404110694", "9423245848", "9457395787",
-    "9465661404", "9501391857", "9510611678", "9529630429", "9530396523",
-    "9545115234", "9545437576", "9545477705", "9549750430", "9552863005",
-    "9552924798", "9568471648", "9575950873", "9579254584", "9592303988",
-    "9607611084", "9646348512", "9699913130", "9714631547", "9736688640",
-    "9736688678", "9763388678", "9763818103", "9765125512", "9779109183",
-    "9814068692", "9815190168", "9823776156", "9855325054", "9855880586",
-    "9878583717", "9881821699", "9888704002", "9890909761", "9891562384",
-    "9913818592", "9913918592", "9914577606", "9988921532", "9911470545",
-    "9710100002", "7051774595", "9970680118", "7009869137", "7589972658",
-    "8288046378", "7814116604", "7087108082", "9780666555", "9316430001",
-    "7347326047", "8837539151", "8872110608", "8572039776", "9056376867",
-    "9876044026", "8847019547", "9622574566", "8968019588",
-    "9781410993", "9217979188", "8054001213", "7428219017", "7505802292",
-    "7807044552", "8278493395", "7733031077", "7340250307", "6283566137",
-    "9814444633", "7837891404", "7023581448", "9636572083", "8557913227",
-    "8796022037", "7009078558", "9464773907", "9914732753", "7526817339",
-    "9053834188", "9888748003", "9988243191", "7657822557", "9914735968",
-    "7837982662", "9289750755", "7814615932", "7428747498", "8222860271",
-    "8427023244", "9289585304", "6284664543", "8796902582", "7505979832",
-    "7533945774", "8968019558", "9115543258", "7888862814", "8222801005",
-    "9992050407", "8198882000", "9878235035", "9915138099", "9217653467",
-    "7838057854", "7528973720", "7888313602", "9530500136", "9797604563",
-    "7413927178", "9352525119", "8684800305", "7973911654", "9779850052",
-    "6283713034", "9417063381", "9872970752", "7589027841", "9877524103",
-    "9464960036", "9914329048", "7906169159", "7837400352", "8630245413",
-    "9914886700", "9779038583", "6239728879", "8923530539", "8053179511",
-    "7986958550", "7056451978", "7807354005", "9115118921", "8556978433",
-    "8745080113", "9517966572", "9587500004", "7015826065", "8146347167",
-    "9115118954", "9871338166", "9780754135", "9914789907", "9053942922",
-    "9478325552", "8054944680", "9812336166", "9376191472", "7508815731",
-    "7657807848", "6284360033", "8360630044", "9569679550", "7888649063", 
-    "7351615161", "9646680694", "9501746579"
-  ],
+  blockedPhoneNumbers: _blockedData.blockedPhoneNumbers,
 
   // ==========================================================================
-  // GLOBALLY BLOCKED SENDERS
-  // Messages from these WhatsApp numbers are completely ignored by all bots.
-  // Unlike blockedPhoneNumbers (which checks message text), this blocks the
-  // SENDER — every message they send from any group is dropped before processing.
-  // Add 10-digit numbers here. Country code (91) is stripped automatically.
+  // GLOBALLY BLOCKED SENDERS — loaded from core/blocked-data.json
+  // Blocks the SENDER: every message they send from any group is dropped
+  // before processing. 10-digit numbers; country code (91) stripped automatically.
   // ==========================================================================
-  blockedSenders: [
-   "9602946666", "8684800305", "9464960036","7508815731","7657807848"
-  ],
+  blockedSenders: _blockedData.blockedSenders,
 
   // 🔒 Anti-ban hardening (Bot-1 constants)
   rateLimits: {
@@ -245,7 +152,7 @@ export const GLOBAL_CONFIG = {
   reconnect: {
     strictAgeMs: 10000,       // B1: drop messages >10s old after reconnect
     strictWindowDuration: 30000, // B1: enforce for 30s after reconnect
-    settlingMin: 5000,        // A4: 5-15s settling delay 
+    settlingMin: 5000,        // A4: 5-15s settling delay
     settlingMax: 15000,
   },
 };

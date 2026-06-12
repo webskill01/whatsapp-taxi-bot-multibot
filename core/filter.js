@@ -22,6 +22,7 @@ function normalizeText(text) {
   if (!text) return "";
 
   return text
+    .normalize("NFC")  // Unify Unicode form so Hindi/Punjabi precomposed vs decomposed (nukta) letters match keywords
     .replace(/[\u{1F600}-\u{1F64F}]/gu, "")
     .replace(/[\u{1F300}-\u{1F5FF}]/gu, "")
     .replace(/[\u{1F680}-\u{1F6FF}]/gu, "")
@@ -454,7 +455,7 @@ export function isTaxiRequest(text, keywords, ignoreList) {
   if (!text) return false;
 
   const normalized = normalizeText(text);
-  const originalLower = text.toLowerCase();
+  const originalLower = text.normalize("NFC").toLowerCase();
 
   // Strip WhatsApp formatting symbols (* ` ~ _) for keyword matching.
   // Replace with space (not empty string) to preserve word boundaries.

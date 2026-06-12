@@ -27,6 +27,9 @@ baileys_auth/
 **/.forwarded-messages.json
 .forwarded-messages.json
 
+# ✅ Volatile block/ignore data — edited directly on VPS, never pushed
+core/blocked-data.json
+
 # PM2
 .pm2/
 
