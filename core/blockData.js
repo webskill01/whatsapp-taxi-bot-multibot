@@ -75,7 +75,9 @@ export function addNumbersToField(data, field, input) {
     set.add(d);
     added.push(d);
   }
-  data[field] = [...set].sort();
+  // Preserve insertion order (existing first, new appended) so the dashboard can
+  // show most-recent additions first by reversing. No sort = recency kept.
+  data[field] = [...set];
   return { added, dupes, invalid };
 }
 

@@ -2,76 +2,131 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Bot Control Panel — Admin</title>
 <style>
-  :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2e38; --txt:#e6e8ec; --muted:#8a909c;
-          --grn:#2ecc71; --red:#e74c3c; --amber:#f39c12; --blu:#3498db; }
-  * { box-sizing:border-box; }
-  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
-  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-  h1 { font-size:18px; margin:0; }
-  .wrap { padding:20px; max-width:1100px; margin:0 auto; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  .bot { display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; gap:10px; }
-  .bot:last-child { border-bottom:none; }
-  .name { font-weight:600; font-size:15px; }
-  .badge { font-size:11px; padding:2px 8px; border-radius:20px; text-transform:uppercase; letter-spacing:.04em; }
-  .on { background:rgba(46,204,113,.15); color:var(--grn); }
-  .off { background:rgba(231,76,60,.15); color:var(--red); }
-  .pausedb { background:rgba(243,156,18,.18); color:var(--amber); }
-  button { background:#262b34; color:var(--txt); border:1px solid var(--line); padding:7px 12px; border-radius:7px; cursor:pointer; font-size:13px; }
-  button:hover { background:#2f353f; }
-  button.danger { border-color:#5a2a2a; color:#ff8a80; }
-  button.go { border-color:#2a5a3a; color:#a5f3c4; }
-  input { background:#11141a; border:1px solid var(--line); color:var(--txt); padding:8px 10px; border-radius:7px; font-size:13px; }
+  :root {
+    --bg:#0b0d12; --bg2:#0f1219; --card:#161a22; --card2:#1b2029; --line:#262c38;
+    --txt:#e8eaf0; --muted:#8b93a3; --grn:#34d399; --red:#f87171; --amber:#fbbf24;
+    --blu:#60a5fa; --accent:#6366f1; --radius:14px;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; }
+  body {
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:radial-gradient(1200px 600px at 50% -10%, #161b2e 0%, var(--bg) 55%);
+    color:var(--txt); min-height:100dvh; padding-bottom:env(safe-area-inset-bottom);
+  }
+  header {
+    position:sticky; top:0; z-index:5; backdrop-filter:blur(10px);
+    background:rgba(11,13,18,.78); border-bottom:1px solid var(--line);
+    padding:14px 16px; display:flex; justify-content:space-between; align-items:center; gap:10px;
+  }
+  h1 { font-size:16px; margin:0; font-weight:650; display:flex; align-items:center; gap:8px; }
+  .tag { font-size:10px; color:var(--accent); border:1px solid #2e2f57; background:#171833; padding:2px 7px; border-radius:20px; }
+  .wrap { padding:14px; max-width:920px; margin:0 auto; }
+  .card { background:linear-gradient(180deg,var(--card),var(--bg2)); border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin-bottom:14px; }
+  .card h2 { font-size:13px; margin:0 0 2px; font-weight:600; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+  .bot { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .bot:first-child { padding-top:2px; }
+  .bot:last-child { border-bottom:none; padding-bottom:2px; }
+  .binfo { min-width:0; }
+  .name { font-weight:650; font-size:15px; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .sub { color:var(--muted); font-size:12px; margin-top:3px; }
+  .badge { font-size:10px; padding:3px 9px; border-radius:20px; text-transform:uppercase; letter-spacing:.03em; font-weight:600; white-space:nowrap; }
+  .on { background:rgba(52,211,153,.14); color:var(--grn); }
+  .off { background:rgba(248,113,113,.14); color:var(--red); }
+  .warnb { background:rgba(251,191,36,.16); color:var(--amber); }
+  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+  .dot.on { background:var(--grn); box-shadow:0 0 8px var(--grn); }
+  .dot.off { background:var(--red); }
+
+  .actions { display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+  button { background:var(--card2); color:var(--txt); border:1px solid var(--line); padding:9px 13px; border-radius:10px; cursor:pointer; font-size:13px; font-weight:550; transition:.12s; display:inline-flex; align-items:center; gap:5px; }
+  button:hover { background:#222836; border-color:#333b4d; }
+  button:active { transform:scale(.97); }
+  button.danger { border-color:#5b2b2b; color:#fca5a5; }
+  button.danger:hover { background:#2a1818; }
+  button.go { border-color:#235241; color:#86efac; }
+  button.go:hover { background:#15241d; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  input { background:#0c0f16; border:1px solid var(--line); color:var(--txt); padding:11px 12px; border-radius:10px; font-size:14px; outline:none; }
+  input:focus { border-color:var(--accent); }
   .muted { color:var(--muted); font-size:12px; }
-  .grp { display:flex; justify-content:space-between; gap:10px; padding:8px; border:1px solid var(--line); border-radius:7px; margin:6px 0; align-items:center; }
-  .grp.newgrp { border-color:#3a4a2a; background:rgba(46,204,113,.06); }
-  .gid { font-family:monospace; font-size:11px; color:var(--muted); word-break:break-all; }
-  dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; max-width:560px; width:92%; }
-  dialog::backdrop { background:rgba(0,0,0,.6); }
-  .pill { font-size:10px; padding:1px 7px; border-radius:20px; }
-  .pill.source { background:rgba(52,152,219,.18); color:var(--blu); }
-  .pill.target { background:rgba(46,204,113,.15); color:var(--grn); }
-  .pill.other { background:rgba(138,144,156,.15); color:var(--muted); }
-  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#262b34; border:1px solid var(--line); padding:10px 16px; border-radius:8px; opacity:0; transition:.2s; pointer-events:none; }
-  #toast.show { opacity:1; }
+
+  .grp { display:flex; justify-content:space-between; gap:10px; padding:10px; border:1px solid var(--line); border-radius:11px; margin:7px 0; align-items:center; background:var(--bg2); flex-wrap:wrap; }
+  .grp.newgrp { border-color:#2c4a36; background:rgba(52,211,153,.05); }
+  .grp.disabled { border-color:#5b2b2b; }
+  .gmeta { min-width:0; flex:1; }
+  .gname { font-size:13px; font-weight:550; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .gid { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--muted); word-break:break-all; margin-top:3px; }
+  .pill { font-size:9px; padding:2px 7px; border-radius:20px; text-transform:uppercase; font-weight:600; }
+  .pill.source { background:rgba(96,165,250,.16); color:var(--blu); }
+  .pill.target { background:rgba(52,211,153,.14); color:var(--grn); }
+  .pill.other { background:rgba(139,147,163,.14); color:var(--muted); }
+  .gbtns { display:flex; gap:6px; flex-wrap:wrap; }
+  button.sm { padding:7px 10px; font-size:12px; }
+
+  dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:16px; max-width:600px; width:94%; padding:0; }
+  dialog::backdrop { background:rgba(0,0,0,.66); backdrop-filter:blur(2px); }
+  .dlg-head { padding:16px 16px 8px; display:flex; justify-content:space-between; align-items:center; gap:10px; position:sticky; top:0; background:var(--card); border-radius:16px 16px 0 0; }
+  .dlg-body { padding:0 16px 16px; max-height:70dvh; overflow:auto; }
+  details { margin:8px 0; border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+  summary { cursor:pointer; font-weight:550; font-size:13px; }
+
+  #toast { position:fixed; left:50%; bottom:calc(20px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(8px); background:#1f2430; border:1px solid var(--line); padding:11px 16px; border-radius:11px; opacity:0; transition:.22s; pointer-events:none; z-index:50; max-width:90vw; font-size:13px; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  img.qr { width:min(280px,72vw); border-radius:12px; margin-top:10px; }
+
+  @media (max-width:560px) {
+    .bot { flex-direction:column; align-items:stretch; }
+    .actions { justify-content:stretch; }
+    .actions button { flex:1 1 auto; justify-content:center; }
+    .stack-in { flex-direction:column; align-items:stretch; }
+    .stack-in input, .stack-in button { width:100%; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>🎛️ Bot Control Panel <span class="muted">· admin</span></h1>
-  <button onclick="loadBots()">⟳ Refresh</button>
+  <h1>🎛️ Control Panel <span class="tag">admin</span></h1>
+  <button class="sm" onclick="loadBots()">⟳ Refresh</button>
 </header>
 <div class="wrap">
   <div class="card" id="bots"><div class="muted">Loading bots…</div></div>
 
   <div class="card">
     <div class="row" style="justify-content:space-between">
-      <strong>🚫 Shared block list</strong>
+      <h2>🚫 Shared block list</h2>
       <span class="muted" id="blockCounts"></span>
     </div>
-    <div class="row" style="margin-top:12px">
-      <input id="numIn" placeholder="block number(s) — any format" style="flex:1;min-width:220px" />
+    <div class="row stack-in" style="margin-top:12px">
+      <input id="numIn" placeholder="block number(s) — any format" style="flex:1;min-width:200px" />
       <button class="go" onclick="submitBlock('number')">Block number</button>
       <button onclick="submitBlock('sender')">Block sender</button>
     </div>
-    <div class="row" style="margin-top:10px">
-      <input id="ignIn" placeholder="ignore phrase (e.g. khali)" style="flex:1;min-width:220px" />
+    <div class="row stack-in" style="margin-top:10px">
+      <input id="ignIn" placeholder="ignore phrase (e.g. khali)" style="flex:1;min-width:200px" />
       <button onclick="submitIgnore()">Add ignore</button>
       <button onclick="openList()">Manage list…</button>
     </div>
   </div>
 </div>
 
-<dialog id="qrDlg"><div style="padding:18px;text-align:center" id="qrBody"></div>
-  <div style="padding:0 18px 18px;text-align:right"><button onclick="qrDlg.close()">Close</button></div></dialog>
-<dialog id="grpDlg"><div style="padding:18px" id="grpBody"></div>
-  <div style="padding:0 18px 18px;text-align:right"><button onclick="grpDlg.close()">Close</button></div></dialog>
-<dialog id="listDlg"><div style="padding:18px" id="listBody"></div>
-  <div style="padding:0 18px 18px;text-align:right"><button onclick="listDlg.close()">Close</button></div></dialog>
+<dialog id="qrDlg">
+  <div class="dlg-head"><strong id="qrTitle">QR</strong><button class="sm" onclick="qrDlg.close()">✕</button></div>
+  <div class="dlg-body" id="qrBody" style="text-align:center"></div>
+</dialog>
+<dialog id="grpDlg">
+  <div class="dlg-head"><strong id="grpTitle">Groups</strong><button class="sm" onclick="grpDlg.close()">✕</button></div>
+  <div class="dlg-body" id="grpBody"></div>
+</dialog>
+<dialog id="listDlg">
+  <div class="dlg-head"><strong>Manage block list</strong><button class="sm" onclick="listDlg.close()">✕</button></div>
+  <div class="dlg-body" id="listBody"></div>
+</dialog>
 <div id="toast"></div>
 
 <script>
@@ -80,35 +135,36 @@ const H = { "x-token": token, "Content-Type": "application/json" };
 const api = (p, opt={}) => fetch(p + (p.includes("?")?"&":"?") + "token=" + token, opt).then(r=>r.json());
 const post = (p, body) => api(p, { method:"POST", headers:H, body:JSON.stringify(body||{}) });
 let qrTimer = null;
+let BOTS = [];                 // cache of last /api/bots for disabledTargets lookup
 
-function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2200); }
+function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("show"),2400); }
+const esc = (s)=>String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
 
 async function loadBots(){
   const r = await api("/api/bots");
-  if (r.error){ document.getElementById("bots").innerHTML = `<div class="off">${r.error}</div>`; return; }
+  if (r.error){ document.getElementById("bots").innerHTML = `<div class="off">${esc(r.error)}</div>`; return; }
+  BOTS = r.bots;
   document.getElementById("bots").innerHTML = r.bots.map(botRow).join("");
   loadCounts();
 }
 function botRow(b){
-  const st = b.pm2.status;
-  const online = st === "online";
-  const paused = b.runtime?.paused;
+  const st = b.pm2.status, online = st==="online", paused = b.runtime?.paused;
   const dis = (b.runtime?.disabledTargets||[]).length;
   return `<div class="bot">
-    <div>
-      <div class="name">${b.id}
-        <span class="badge ${online?'on':'off'}">${st}</span>
-        ${paused?'<span class="badge pausedb">paused</span>':''}
-        ${dis?`<span class="badge pausedb">${dis} target off</span>`:''}
+    <div class="binfo">
+      <div class="name"><span class="dot ${online?'on':'off'}"></span>${esc(b.id)}
+        <span class="badge ${online?'on':'off'}">${esc(st)}</span>
+        ${paused?'<span class="badge warnb">paused</span>':''}
+        ${dis?`<span class="badge warnb">${dis} group off</span>`:''}
       </div>
-      <div class="muted">port ${b.statsPort} · restarts ${b.pm2.restarts ?? '–'}</div>
+      <div class="sub">port ${b.statsPort} · ${b.pm2.restarts ?? '–'} restarts</div>
     </div>
-    <div class="row">
-      <button onclick="togglePause('${b.id}', ${!paused})">${paused?'▶ Resume':'⏸ Pause'}</button>
+    <div class="actions">
+      <button class="${paused?'go':''}" onclick="togglePause('${b.id}', ${!paused})">${paused?'▶ Resume':'⏸ Pause'}</button>
       <button onclick="showGroups('${b.id}')">👥 Groups</button>
       <button onclick="showQR('${b.id}')">📱 QR</button>
-      <button class="go" onclick="act('${b.id}','restart','Restart this bot?')">↻ Restart</button>
-      <button class="danger" onclick="act('${b.id}','reset','RESET AUTH? This logs the bot out and needs a new QR scan.')">⚠ Reset</button>
+      <button class="go" onclick="act('${b.id}','restart','Restart '+'${b.id}'+'?')">↻ Restart</button>
+      <button class="danger" onclick="act('${b.id}','reset','RESET AUTH for ${b.id}? It logs the bot out and needs a new QR scan.')">⚠ Reset</button>
     </div>
   </div>`;
 }
@@ -125,46 +181,72 @@ async function togglePause(id, paused){
 }
 
 async function showQR(id){
+  document.getElementById("qrTitle").textContent = id + " · QR";
   const body = document.getElementById("qrBody");
   body.innerHTML = "<div class='muted'>Loading QR…</div>"; qrDlg.showModal();
   const tick = async () => {
     const r = await api(`/api/bot/${id}/qr`);
-    if (r.qr){ body.innerHTML = `<div style="margin-bottom:8px">Scan with WhatsApp → Linked devices</div><img src="${r.qr}" style="width:280px;border-radius:8px"/>`; }
-    else { body.innerHTML = `<div class="muted">${r.error||'No QR right now (bot may be connected). Reset auth to force a new one.'}</div>`; }
+    if (r.qr) body.innerHTML = `<div class="muted">WhatsApp → Linked devices → Link a device</div><img class="qr" src="${r.qr}"/>`;
+    else body.innerHTML = `<div class="muted">${esc(r.error||'No QR right now (bot may be connected). Use Reset to force a new one.')}</div>`;
   };
   await tick(); clearInterval(qrTimer); qrTimer = setInterval(tick, 4000);
 }
 qrDlg.addEventListener("close", ()=>clearInterval(qrTimer));
 
 async function showGroups(id){
+  document.getElementById("grpTitle").textContent = id + " · Groups";
   const body = document.getElementById("grpBody");
   body.innerHTML = "<div class='muted'>Fetching groups…</div>"; grpDlg.showModal();
   const r = await api(`/api/bot/${id}/groups`);
-  if (!r.groups){ body.innerHTML = `<div class="off">${r.error||'Bot not connected'}</div>`; return; }
-  // Unmonitored (new) groups first — that's the "find the new group id" workflow.
-  const sorted = [...r.groups].sort((a,b)=> (a.type==='other'?-1:1) - (b.type==='other'?-1:1));
-  body.innerHTML = `<strong>${id}</strong> <span class="muted">· ${r.totalGroups} groups · ${r.breakdown.unmonitored} unmonitored</span>
-    <div style="max-height:60vh;overflow:auto;margin-top:10px">` +
-    sorted.map(g=>`<div class="grp ${g.type==='other'?'newgrp':''}">
-      <div><div>${g.name} <span class="pill ${g.type}">${g.category}</span></div>
-        <div class="gid">${g.id}</div></div>
-      <button onclick="copyId('${g.id}')">Copy ID</button></div>`).join("") + `</div>`;
+  if (!r.groups){ body.innerHTML = `<div class="off">${esc(r.error||'Bot not connected')}</div>`; return; }
+  const bot = BOTS.find(b=>b.id===id);
+  const disabled = new Set(bot?.runtime?.disabledTargets || []);
+  // Unmonitored (new) groups first — the "find the new group id" workflow.
+  const sorted = [...r.groups].sort((a,b)=> (a.type==='other'?0:1) - (b.type==='other'?0:1));
+  body.innerHTML = `<div class="muted" style="margin-bottom:8px">${r.totalGroups} groups · ${r.breakdown.unmonitored} new/unmonitored · tap Copy ID, or pause sharing to a target</div>` +
+    sorted.map(g=>{
+      const off = disabled.has(g.id);
+      const targetToggle = g.type==='target'
+        ? `<button class="sm ${off?'go':'danger'}" onclick="toggleTarget('${id}','${g.id}',${!off})">${off?'▶ Resume':'⏸ Pause'}</button>`
+        : '';
+      return `<div class="grp ${g.type==='other'?'newgrp':''} ${off?'disabled':''}">
+        <div class="gmeta">
+          <div class="gname">${esc(g.name)} <span class="pill ${g.type}">${esc(g.category)}</span>${off?'<span class="badge warnb">sharing off</span>':''}</div>
+          <div class="gid">${esc(g.id)}</div>
+        </div>
+        <div class="gbtns">
+          ${targetToggle}
+          <button class="sm" onclick="copyId('${g.id}')">Copy ID</button>
+        </div>
+      </div>`;
+    }).join("");
 }
-function copyId(id){ navigator.clipboard.writeText(id); toast("Group ID copied"); }
+async function toggleTarget(botId, groupId, disabled){
+  const r = await post(`/api/bot/${botId}/target`, { groupId, disabled });
+  if (r.error){ toast(r.error); return; }
+  toast(disabled ? "Sharing paused for this group" : "Sharing resumed");
+  await loadBots();          // refresh disabledTargets cache + badges
+  showGroups(botId);          // re-render the dialog with new state
+}
+function copyId(id){
+  navigator.clipboard?.writeText(id).then(()=>toast("Group ID copied")).catch(()=>{
+    const t=document.createElement("textarea"); t.value=id; document.body.appendChild(t); t.select();
+    document.execCommand("copy"); t.remove(); toast("Group ID copied");
+  });
+}
 
 async function loadCounts(){
   const r = await api("/api/block/list");
   if (r.counts) document.getElementById("blockCounts").textContent =
-    `${r.counts.blockedPhoneNumbers} numbers · ${r.counts.blockedSenders} senders · ${r.counts.ignoreIfContains} ignore`;
+    `${r.counts.blockedPhoneNumbers} nums · ${r.counts.blockedSenders} senders · ${r.counts.ignoreIfContains} ignore`;
 }
 async function submitBlock(kind){
-  const input = document.getElementById("numIn").value.trim();
-  if (!input) return;
+  const input = document.getElementById("numIn").value.trim(); if(!input) return;
   const r = await post(`/api/block/${kind}`, { input });
-  const parts=[]; if(r.added?.length)parts.push(`added ${r.added.join(", ")}`);
-  if(r.dupes?.length)parts.push(`already had ${r.dupes.join(", ")}`);
-  if(r.invalid?.length)parts.push(`invalid ${r.invalid.join(", ")}`);
-  toast(parts.join(" · ")||"nothing to do"); document.getElementById("numIn").value=""; loadCounts();
+  const p=[]; if(r.added?.length)p.push(`added ${r.added.join(", ")}`);
+  if(r.dupes?.length)p.push(`already had ${r.dupes.join(", ")}`);
+  if(r.invalid?.length)p.push(`invalid ${r.invalid.join(", ")}`);
+  toast(p.join(" · ")||"nothing to do"); document.getElementById("numIn").value=""; loadCounts();
 }
 async function submitIgnore(){
   const phrase = document.getElementById("ignIn").value.trim(); if(!phrase) return;
@@ -175,12 +257,12 @@ async function submitIgnore(){
 async function openList(){
   const r = await api("/api/block/list");
   if (!r.data){ toast("admin only"); return; }
-  const body = document.getElementById("listBody");
+  // recent-first: reverse so newest additions show on top
   const section = (title, field, arr) => `<details><summary>${title} (${arr.length})</summary>
-    <div style="max-height:30vh;overflow:auto;margin:8px 0">` +
-    arr.map(v=>`<div class="grp"><span class="gid">${v}</span>
-      <button class="danger" onclick="removeEntry('${field}','${String(v).replace(/'/g,"")}')">Remove</button></div>`).join("") + `</div></details>`;
-  body.innerHTML = `<strong>Manage block list</strong>` +
+    <div style="max-height:34dvh;overflow:auto;margin-top:8px">` +
+    [...arr].reverse().map(v=>`<div class="grp"><span class="gid">${esc(v)}</span>
+      <button class="sm danger" onclick="removeEntry('${field}','${esc(String(v)).replace(/'/g,"")}')">Remove</button></div>`).join("") + `</div></details>`;
+  document.getElementById("listBody").innerHTML =
     section("Blocked numbers","blockedPhoneNumbers",r.data.blockedPhoneNumbers) +
     section("Blocked senders","blockedSenders",r.data.blockedSenders) +
     section("Ignore phrases","ignoreIfContains",r.data.ignoreIfContains);
@@ -193,7 +275,7 @@ async function removeEntry(field,value){
 
 if (!token) document.getElementById("bots").innerHTML = "<div class='off'>Missing ?token= in URL</div>";
 else loadBots();
-setInterval(loadBots, 15000);
+setInterval(()=>{ if(!document.querySelector("dialog[open]")) loadBots(); }, 15000);
 </script>
 </body>
 </html>

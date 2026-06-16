@@ -93,7 +93,7 @@ function addNumbers(data, field, rawArgs) {
     set.add(d);
     added.push(d);
   }
-  data[field] = [...set].sort();
+  data[field] = [...set]; // keep insertion order (recent last) — dashboard shows newest first
   return { added, dupes, invalid };
 }
 
