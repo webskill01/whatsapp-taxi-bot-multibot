@@ -51,7 +51,6 @@
   button.danger:hover { background:#2a1818; }
   button.go { border-color:#235241; color:#86efac; }
   button.go:hover { background:#15241d; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   input { background:#0c0f16; border:1px solid var(--line); color:var(--txt); padding:11px 12px; border-radius:10px; font-size:14px; outline:none; }
   input:focus { border-color:var(--accent); }
   .muted { color:var(--muted); font-size:12px; }
@@ -68,11 +67,12 @@
   .pill.other { background:rgba(139,147,163,.14); color:var(--muted); }
   .gbtns { display:flex; gap:6px; flex-wrap:wrap; }
   button.sm { padding:7px 10px; font-size:12px; }
+  .divider { border:none; border-top:1px solid var(--line); margin:14px 0 10px; }
 
   dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:16px; max-width:600px; width:94%; padding:0; }
   dialog::backdrop { background:rgba(0,0,0,.66); backdrop-filter:blur(2px); }
   .dlg-head { padding:16px 16px 8px; display:flex; justify-content:space-between; align-items:center; gap:10px; position:sticky; top:0; background:var(--card); border-radius:16px 16px 0 0; }
-  .dlg-body { padding:0 16px 16px; max-height:70dvh; overflow:auto; }
+  .dlg-body { padding:0 16px 16px; max-height:72dvh; overflow:auto; }
   details { margin:8px 0; border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
   summary { cursor:pointer; font-weight:550; font-size:13px; }
 
@@ -115,6 +115,10 @@
   </div>
 </div>
 
+<dialog id="pauseDlg">
+  <div class="dlg-head"><strong id="pauseTitle">Sharing</strong><button class="sm" onclick="pauseDlg.close()">✕</button></div>
+  <div class="dlg-body" id="pauseBody"></div>
+</dialog>
 <dialog id="qrDlg">
   <div class="dlg-head"><strong id="qrTitle">QR</strong><button class="sm" onclick="qrDlg.close()">✕</button></div>
   <div class="dlg-body" id="qrBody" style="text-align:center"></div>
@@ -135,7 +139,7 @@ const H = { "x-token": token, "Content-Type": "application/json" };
 const api = (p, opt={}) => fetch(p + (p.includes("?")?"&":"?") + "token=" + token, opt).then(r=>r.json());
 const post = (p, body) => api(p, { method:"POST", headers:H, body:JSON.stringify(body||{}) });
 let qrTimer = null;
-let BOTS = [];                 // cache of last /api/bots for disabledTargets lookup
+let BOTS = [];
 
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("show"),2400); }
 const esc = (s)=>String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
@@ -150,6 +154,7 @@ async function loadBots(){
 function botRow(b){
   const st = b.pm2.status, online = st==="online", paused = b.runtime?.paused;
   const dis = (b.runtime?.disabledTargets||[]).length;
+  const sharingLabel = paused ? '⏸ Sharing (all off)' : dis ? `⏸ Sharing (${dis} off)` : '⏸ Sharing';
   return `<div class="bot">
     <div class="binfo">
       <div class="name"><span class="dot ${online?'on':'off'}"></span>${esc(b.id)}
@@ -160,10 +165,10 @@ function botRow(b){
       <div class="sub">port ${b.statsPort} · ${b.pm2.restarts ?? '–'} restarts</div>
     </div>
     <div class="actions">
-      <button class="${paused?'go':''}" onclick="togglePause('${b.id}', ${!paused})">${paused?'▶ Resume':'⏸ Pause'}</button>
+      <button class="${paused||dis?'go':''}" onclick="openPauseMenu('${b.id}')">${sharingLabel}</button>
       <button onclick="showGroups('${b.id}')">👥 Groups</button>
       <button onclick="showQR('${b.id}')">📱 QR</button>
-      <button class="go" onclick="act('${b.id}','restart','Restart '+'${b.id}'+'?')">↻ Restart</button>
+      <button class="go" onclick="act('${b.id}','restart','Restart ${b.id}?')">↻ Restart</button>
       <button class="danger" onclick="act('${b.id}','reset','RESET AUTH for ${b.id}? It logs the bot out and needs a new QR scan.')">⚠ Reset</button>
     </div>
   </div>`;
@@ -175,9 +180,50 @@ async function act(id, action, confirmMsg){
   toast(r.message || r.error || "done");
   setTimeout(loadBots, 1500);
 }
-async function togglePause(id, paused){
+
+// ── Sharing submenu: whole-bot pause + per-target-group pause ──
+async function openPauseMenu(id){
+  const bot = BOTS.find(b=>b.id===id);
+  document.getElementById("pauseTitle").textContent = id + " · Sharing";
+  const body = document.getElementById("pauseBody");
+  const paused = bot?.runtime?.paused;
+  body.innerHTML = `
+    <div class="grp ${paused?'disabled':''}">
+      <div class="gmeta"><div class="gname">Entire bot</div>
+        <div class="muted">${paused?'Paused — forwarding nothing':'Forwarding active'}</div></div>
+      <button class="sm ${paused?'go':'danger'}" onclick="menuPause('${id}',${!paused})">${paused?'▶ Resume all':'⏸ Pause all'}</button>
+    </div>
+    <hr class="divider"/>
+    <div class="muted" style="margin-bottom:4px">Or pause sharing to a specific target group:</div>
+    <div id="pauseTargets"><div class="muted">Loading groups…</div></div>`;
+  pauseDlg.showModal();
+
+  const disabled = new Set(bot?.runtime?.disabledTargets || []);
+  const r = await api(`/api/bot/${id}/groups`);
+  const box = document.getElementById("pauseTargets");
+  if (!box) return; // dialog closed meanwhile
+  if (!r.groups){ box.innerHTML = `<div class="muted">${esc(r.error||'Bot offline — only whole-bot pause available')}</div>`; return; }
+  const targets = r.groups.filter(g=>g.type==='target');
+  if (!targets.length){ box.innerHTML = `<div class="muted">No target groups configured.</div>`; return; }
+  box.innerHTML = targets.map(g=>{
+    const off = disabled.has(g.id);
+    return `<div class="grp ${off?'disabled':''}">
+      <div class="gmeta"><div class="gname">${esc(g.name)} ${off?'<span class="badge warnb">off</span>':''}</div>
+        <div class="gid">${esc(g.id)}</div></div>
+      <button class="sm ${off?'go':'danger'}" onclick="menuTarget('${id}','${g.id}',${!off})">${off?'▶ Resume':'⏸ Pause'}</button>
+    </div>`;
+  }).join("");
+}
+async function menuPause(id, paused){
   const r = await post(`/api/bot/${id}/pause`, { paused });
-  toast(r.error || (paused?"Paused":"Resumed")); loadBots();
+  toast(r.error || (paused?'Paused entire bot':'Resumed'));
+  await loadBots(); openPauseMenu(id);
+}
+async function menuTarget(id, groupId, disabled){
+  const r = await post(`/api/bot/${id}/target`, { groupId, disabled });
+  if (r.error){ toast(r.error); return; }
+  toast(disabled?'Group sharing paused':'Group sharing resumed');
+  await loadBots(); openPauseMenu(id);
 }
 
 async function showQR(id){
@@ -199,34 +245,13 @@ async function showGroups(id){
   body.innerHTML = "<div class='muted'>Fetching groups…</div>"; grpDlg.showModal();
   const r = await api(`/api/bot/${id}/groups`);
   if (!r.groups){ body.innerHTML = `<div class="off">${esc(r.error||'Bot not connected')}</div>`; return; }
-  const bot = BOTS.find(b=>b.id===id);
-  const disabled = new Set(bot?.runtime?.disabledTargets || []);
-  // Unmonitored (new) groups first — the "find the new group id" workflow.
   const sorted = [...r.groups].sort((a,b)=> (a.type==='other'?0:1) - (b.type==='other'?0:1));
-  body.innerHTML = `<div class="muted" style="margin-bottom:8px">${r.totalGroups} groups · ${r.breakdown.unmonitored} new/unmonitored · tap Copy ID, or pause sharing to a target</div>` +
-    sorted.map(g=>{
-      const off = disabled.has(g.id);
-      const targetToggle = g.type==='target'
-        ? `<button class="sm ${off?'go':'danger'}" onclick="toggleTarget('${id}','${g.id}',${!off})">${off?'▶ Resume':'⏸ Pause'}</button>`
-        : '';
-      return `<div class="grp ${g.type==='other'?'newgrp':''} ${off?'disabled':''}">
-        <div class="gmeta">
-          <div class="gname">${esc(g.name)} <span class="pill ${g.type}">${esc(g.category)}</span>${off?'<span class="badge warnb">sharing off</span>':''}</div>
-          <div class="gid">${esc(g.id)}</div>
-        </div>
-        <div class="gbtns">
-          ${targetToggle}
-          <button class="sm" onclick="copyId('${g.id}')">Copy ID</button>
-        </div>
-      </div>`;
-    }).join("");
-}
-async function toggleTarget(botId, groupId, disabled){
-  const r = await post(`/api/bot/${botId}/target`, { groupId, disabled });
-  if (r.error){ toast(r.error); return; }
-  toast(disabled ? "Sharing paused for this group" : "Sharing resumed");
-  await loadBots();          // refresh disabledTargets cache + badges
-  showGroups(botId);          // re-render the dialog with new state
+  body.innerHTML = `<div class="muted" style="margin-bottom:8px">${r.totalGroups} groups · ${r.breakdown.unmonitored} new/unmonitored · tap Copy ID (pause controls live under the Sharing button)</div>` +
+    sorted.map(g=>`<div class="grp ${g.type==='other'?'newgrp':''}">
+      <div class="gmeta"><div class="gname">${esc(g.name)} <span class="pill ${g.type}">${esc(g.category)}</span></div>
+        <div class="gid">${esc(g.id)}</div></div>
+      <div class="gbtns"><button class="sm" onclick="copyId('${g.id}')">Copy ID</button></div>
+    </div>`).join("");
 }
 function copyId(id){
   navigator.clipboard?.writeText(id).then(()=>toast("Group ID copied")).catch(()=>{
@@ -257,7 +282,6 @@ async function submitIgnore(){
 async function openList(){
   const r = await api("/api/block/list");
   if (!r.data){ toast("admin only"); return; }
-  // recent-first: reverse so newest additions show on top
   const section = (title, field, arr) => `<details><summary>${title} (${arr.length})</summary>
     <div style="max-height:34dvh;overflow:auto;margin-top:8px">` +
     [...arr].reverse().map(v=>`<div class="grp"><span class="gid">${esc(v)}</span>

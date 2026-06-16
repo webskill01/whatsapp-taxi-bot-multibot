@@ -39,6 +39,12 @@
   .gname { font-size:13px; font-weight:550; }
   .gid { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--muted); word-break:break-all; margin-top:2px; }
   .grp button { width:auto; margin:0; padding:9px 12px; font-size:12px; }
+  .divider { border:none; border-top:1px solid var(--line); margin:14px 0 10px; }
+  dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:16px; max-width:540px; width:94%; padding:0; }
+  dialog::backdrop { background:rgba(0,0,0,.66); }
+  .dlg-head { padding:16px 16px 8px; display:flex; justify-content:space-between; align-items:center; }
+  .dlg-body { padding:0 16px 18px; max-height:72dvh; overflow:auto; }
+  .dlg-head button, .dlg-body .grp button { width:auto; margin:0; padding:8px 12px; font-size:12px; }
   #toast { position:fixed; left:50%; bottom:calc(18px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(8px); background:#1f2430; border:1px solid var(--line); padding:11px 16px; border-radius:11px; opacity:0; transition:.22s; z-index:50; max-width:90vw; font-size:13px; }
   #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
 </style>
@@ -52,7 +58,7 @@
 
   <div class="card">
     <h2>Controls</h2>
-    <button id="pauseBtn" onclick="togglePause()">⏸ Pause all sharing</button>
+    <button id="pauseBtn" onclick="openPauseMenu()">⏸ Pause sharing…</button>
     <div class="row2">
       <button class="go" onclick="doAct('restart','Restart your bot now?')">↻ Restart</button>
       <button class="danger" onclick="doAct('reset','Log out and start fresh? You will need to scan a new QR.')">⚠ Reset + QR</button>
@@ -62,19 +68,17 @@
   </div>
 
   <div class="card">
-    <h2>My groups</h2>
-    <div class="muted">Pause sharing to a specific group without stopping the whole bot.</div>
-    <button onclick="loadGroups()" style="margin-top:10px">👥 Load my groups</button>
-    <div id="groups"></div>
-  </div>
-
-  <div class="card">
     <h2>Report a spam number</h2>
     <div class="muted">Adds to the shared block list for every bot. Duplicates are skipped automatically.</div>
     <input id="numIn" placeholder="e.g. 98765 43210 or +91…" style="margin-top:10px" />
     <button class="go" onclick="submitBlock()">Add to block list</button>
   </div>
 </div>
+
+<dialog id="pauseDlg">
+  <div class="dlg-head"><strong>Sharing</strong><button onclick="pauseDlg.close()">✕</button></div>
+  <div class="dlg-body" id="pauseBody"></div>
+</dialog>
 <div id="toast"></div>
 
 <script>
@@ -90,13 +94,14 @@ async function load(){
   const r = await api("/api/bots");
   if (r.error || !r.bots?.length){ document.getElementById("statusLine").innerHTML = `<span class="off">${esc(r.error||'No bot for this link')}</span>`; return; }
   BOT = r.bots[0]; paused = BOT.runtime?.paused;
+  const dis = (BOT.runtime?.disabledTargets||[]).length;
   document.getElementById("botName").innerHTML = `🤖 ${esc(BOT.id)}`;
   const online = BOT.pm2.status === "online";
   document.getElementById("statusLine").innerHTML =
-    `<span class="dot ${online?'on':'off'}"></span> <span class="badge ${online?'on':'off'}">${esc(BOT.pm2.status)}</span> ${paused?'<span class="badge warnb">paused</span>':''}`;
+    `<span class="dot ${online?'on':'off'}"></span> <span class="badge ${online?'on':'off'}">${esc(BOT.pm2.status)}</span> ${paused?'<span class="badge warnb">paused</span>':''} ${dis?`<span class="badge warnb">${dis} group off</span>`:''}`;
   const pb = document.getElementById("pauseBtn");
-  pb.textContent = paused ? "▶ Resume all sharing" : "⏸ Pause all sharing";
-  pb.className = paused ? "go" : "";
+  pb.textContent = paused ? "▶ Sharing paused — manage…" : dis ? `⏸ Sharing (${dis} off)…` : "⏸ Pause sharing…";
+  pb.className = (paused||dis) ? "go" : "";
 }
 async function doAct(action, msg){
   if (!confirm(msg)) return;
@@ -105,9 +110,39 @@ async function doAct(action, msg){
   if (action==='reset') setTimeout(showQR, 4000);
   setTimeout(load, 1500);
 }
-async function togglePause(){
-  const r = await post(`/api/bot/${BOT.id}/pause`, { paused: !paused });
-  toast(r.error || (!paused?"Paused":"Resumed")); load();
+async function openPauseMenu(){
+  const body = document.getElementById("pauseBody");
+  body.innerHTML = `
+    <div class="grp ${paused?'disabled':''}">
+      <div><div class="gname">Entire bot</div><div class="muted">${paused?'Paused — forwarding nothing':'Forwarding active'}</div></div>
+      <button class="${paused?'go':'danger'}" onclick="menuPause(${!paused})">${paused?'▶ Resume all':'⏸ Pause all'}</button>
+    </div>
+    <hr class="divider"/>
+    <div class="muted" style="margin-bottom:4px">Or pause a specific group:</div>
+    <div id="pt"><div class="muted">Loading groups…</div></div>`;
+  pauseDlg.showModal();
+  const disabled = new Set(BOT.runtime?.disabledTargets || []);
+  const r = await api(`/api/bot/${BOT.id}/groups`);
+  const box = document.getElementById("pt"); if (!box) return;
+  if (!r.groups){ box.innerHTML = `<div class="muted">${esc(r.error||'Bot offline — only whole-bot pause available')}</div>`; return; }
+  const targets = r.groups.filter(g=>g.type==='target');
+  if (!targets.length){ box.innerHTML = `<div class="muted">No target groups.</div>`; return; }
+  box.innerHTML = targets.map(g=>{
+    const off = disabled.has(g.id);
+    return `<div class="grp ${off?'disabled':''}">
+      <div><div class="gname">${esc(g.name)} ${off?'<span class="badge warnb">off</span>':''}</div><div class="gid">${esc(g.id)}</div></div>
+      <button class="${off?'go':'danger'}" onclick="menuTarget('${g.id}',${!off})">${off?'▶ Resume':'⏸ Pause'}</button>
+    </div>`;
+  }).join("");
+}
+async function menuPause(p){
+  const r = await post(`/api/bot/${BOT.id}/pause`, { paused: p });
+  toast(r.error || (p?'Paused':'Resumed')); await load(); openPauseMenu();
+}
+async function menuTarget(groupId, disabled){
+  const r = await post(`/api/bot/${BOT.id}/target`, { groupId, disabled });
+  if (r.error){ toast(r.error); return; }
+  toast(disabled?'Group sharing paused':'Group sharing resumed'); await load(); openPauseMenu();
 }
 async function showQR(){
   const box = document.getElementById("qr"); box.innerHTML = "<div class='muted'>Loading QR…</div>";
@@ -117,28 +152,6 @@ async function showQR(){
     else box.innerHTML = `<div class="muted">${esc(r.error||'No QR right now (bot connected). Use Reset to force a new one.')}</div>`;
   };
   await tick(); clearInterval(qrTimer); qrTimer = setInterval(tick, 4000);
-}
-async function loadGroups(){
-  const box = document.getElementById("groups");
-  box.innerHTML = "<div class='muted' style='margin-top:8px'>Loading…</div>";
-  const r = await api(`/api/bot/${BOT.id}/groups`);
-  if (!r.groups){ box.innerHTML = `<div class="off" style="margin-top:8px">${esc(r.error||'Bot not connected')}</div>`; return; }
-  const disabled = new Set(BOT.runtime?.disabledTargets || []);
-  const targets = r.groups.filter(g=>g.type==='target');
-  if (!targets.length){ box.innerHTML = "<div class='muted' style='margin-top:8px'>No target groups configured.</div>"; return; }
-  box.innerHTML = targets.map(g=>{
-    const off = disabled.has(g.id);
-    return `<div class="grp ${off?'disabled':''}">
-      <div><div class="gname">${esc(g.name)} ${off?'<span class="badge warnb">off</span>':''}</div><div class="gid">${esc(g.id)}</div></div>
-      <button class="${off?'go':'danger'}" onclick="toggleTarget('${g.id}',${!off})">${off?'▶ Resume':'⏸ Pause'}</button>
-    </div>`;
-  }).join("");
-}
-async function toggleTarget(groupId, disabled){
-  const r = await post(`/api/bot/${BOT.id}/target`, { groupId, disabled });
-  if (r.error){ toast(r.error); return; }
-  toast(disabled?"Sharing paused for this group":"Sharing resumed");
-  await load(); loadGroups();
 }
 async function submitBlock(){
   const input = document.getElementById("numIn").value.trim(); if(!input) return;
