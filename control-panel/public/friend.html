@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>My Bot</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2e38; --txt:#e6e8ec; --muted:#8a909c;
+          --grn:#2ecc71; --red:#e74c3c; --amber:#f39c12; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  .wrap { padding:18px; max-width:560px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:14px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .badge { font-size:11px; padding:3px 9px; border-radius:20px; text-transform:uppercase; }
+  .on { background:rgba(46,204,113,.15); color:var(--grn); }
+  .off { background:rgba(231,76,60,.15); color:var(--red); }
+  .pausedb { background:rgba(243,156,18,.18); color:var(--amber); }
+  button { background:#262b34; color:var(--txt); border:1px solid var(--line); padding:11px 14px; border-radius:9px; cursor:pointer; font-size:14px; width:100%; margin-top:8px; }
+  button:hover { background:#2f353f; }
+  button.danger { border-color:#5a2a2a; color:#ff8a80; }
+  button.go { border-color:#2a5a3a; color:#a5f3c4; }
+  .row2 { display:flex; gap:8px; } .row2 button { width:50%; }
+  input { background:#11141a; border:1px solid var(--line); color:var(--txt); padding:11px; border-radius:9px; font-size:14px; width:100%; }
+  .muted { color:var(--muted); font-size:13px; }
+  #qr img { width:min(280px,80vw); border-radius:10px; margin-top:10px; }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#262b34; border:1px solid var(--line); padding:10px 16px; border-radius:8px; opacity:0; transition:.2s; }
+  #toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1 id="botName">My Bot</h1>
+    <div id="statusLine" class="muted">Loading…</div>
+  </div>
+
+  <div class="card">
+    <strong>Controls</strong>
+    <button id="pauseBtn" onclick="togglePause()">⏸ Pause sharing</button>
+    <div class="row2">
+      <button class="go" onclick="doAct('restart','Restart your bot now?')">↻ Restart</button>
+      <button class="danger" onclick="doAct('reset','Log out and start fresh? You will need to scan a new QR.')">⚠ Reset + new QR</button>
+    </div>
+    <button onclick="showQR()">📱 Show QR (to re-link WhatsApp)</button>
+    <div id="qr" style="text-align:center"></div>
+  </div>
+
+  <div class="card">
+    <strong>Report a spam number</strong>
+    <div class="muted">Adds to the shared block list for every bot. Already-added numbers are skipped.</div>
+    <input id="numIn" placeholder="e.g. 98765 43210 or +91…" style="margin-top:10px" />
+    <button class="go" onclick="submitBlock()">Add to block list</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+const H = { "x-token": token, "Content-Type": "application/json" };
+const api = (p, opt={}) => fetch(p + (p.includes("?")?"&":"?") + "token=" + token, opt).then(r=>r.json());
+const post = (p, body) => api(p, { method:"POST", headers:H, body:JSON.stringify(body||{}) });
+let BOT=null, paused=false, qrTimer=null;
+
+function toast(m){ const t=document.getElementById("toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2200); }
+
+async function load(){
+  const r = await api("/api/bots");
+  if (r.error || !r.bots?.length){ document.getElementById("statusLine").innerHTML = `<span class="off">${r.error||'No bot for this link'}</span>`; return; }
+  BOT = r.bots[0]; paused = BOT.runtime?.paused;
+  document.getElementById("botName").textContent = BOT.id;
+  const online = BOT.pm2.status === "online";
+  document.getElementById("statusLine").innerHTML =
+    `<span class="badge ${online?'on':'off'}">${BOT.pm2.status}</span> ${paused?'<span class="badge pausedb">paused</span>':''}`;
+  const pb = document.getElementById("pauseBtn");
+  pb.textContent = paused ? "▶ Resume sharing" : "⏸ Pause sharing";
+  pb.className = paused ? "go" : "";
+}
+async function doAct(action, msg){
+  if (!confirm(msg)) return;
+  const r = await post(`/api/bot/${BOT.id}/${action}`, {});
+  toast(r.message || r.error || "done");
+  if (action==='reset') setTimeout(showQR, 4000);
+  setTimeout(load, 1500);
+}
+async function togglePause(){
+  const r = await post(`/api/bot/${BOT.id}/pause`, { paused: !paused });
+  toast(r.error || (!paused?"Paused":"Resumed")); load();
+}
+async function showQR(){
+  const box = document.getElementById("qr"); box.innerHTML = "<div class='muted'>Loading QR…</div>";
+  const tick = async () => {
+    const r = await api(`/api/bot/${BOT.id}/qr`);
+    if (r.qr) box.innerHTML = `<div class="muted">WhatsApp → Linked devices → Link a device</div><img src="${r.qr}"/>`;
+    else box.innerHTML = `<div class="muted">${r.error||'No QR right now (bot connected). Use Reset to force a new one.'}</div>`;
+  };
+  await tick(); clearInterval(qrTimer); qrTimer = setInterval(tick, 4000);
+}
+async function submitBlock(){
+  const input = document.getElementById("numIn").value.trim(); if(!input) return;
+  const r = await post("/api/block/number", { input });
+  const parts=[]; if(r.added?.length)parts.push(`added ${r.added.join(", ")}`);
+  if(r.dupes?.length)parts.push(`already blocked ${r.dupes.join(", ")}`);
+  if(r.invalid?.length)parts.push(`invalid ${r.invalid.join(", ")}`);
+  toast(parts.join(" · ")||"nothing to do"); document.getElementById("numIn").value="";
+}
+if (!token) document.getElementById("statusLine").innerHTML = "<span class='off'>Missing ?token= in URL</span>";
+else { load(); setInterval(load, 15000); }
+</script>
+</body>
+</html>

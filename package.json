@@ -17,6 +17,7 @@
     "pm2:logs": "pm2 logs",
     "pm2:status": "pm2 status",
     "pm2:save": "pm2 save",
+    "panel": "node control-panel/server.js",
     "clean": "find bots -name '.forwarded-messages.json' -delete && find bots -name 'baileys_auth' -type d -exec rm -rf {} +"
   },
   "keywords": [

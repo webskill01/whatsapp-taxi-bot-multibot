@@ -1,0 +1,26 @@
+{
+  "botPhone": "",
+  "sourceGroupIds": [
+    "REPLACE_WITH_SOURCE_GROUP@g.us"
+  ],
+  "pipelines": [
+    {
+      "name": "promo-trial-group",
+      "cityScope": ["*"],
+      "targetGroups": ["REPLACE_WITH_TRIAL_GROUP@g.us"]
+    }
+  ],
+  "promoMode": {
+    "enabled": true,
+    "activateAt": null,
+    "appLink": "https://yourapp.example/ride",
+    "ctaVariants": [
+      "📲 Book this ride on our app: {link}",
+      "🚕 Grab this ride instantly on the app 👉 {link}",
+      "✅ Available on our app — book in seconds: {link}",
+      "📱 Tap to book this ride: {link}",
+      "🔗 Reserve this ride now: {link}",
+      "🚗 Open the app to take this ride: {link}"
+    ]
+  }
+}

@@ -508,6 +508,78 @@ export function isTaxiRequest(text, keywords, ignoreList) {
 }
 
 /**
+ * ============================================================================
+ * PROMO TRANSFORM — replace phone numbers with the app link (promoter bot)
+ * ============================================================================
+ * Used ONLY by a bot running promoMode. Routing decisions still use the ORIGINAL
+ * text (cities etc.); this only rewrites the OUTGOING copy so the forwarded post
+ * sends people to the app instead of the original caller's number.
+ *
+ * Behaviour:
+ *   • The FIRST phone number found is replaced with a rotating CTA (which carries
+ *     the app link) — keeps the message natural and inserts exactly one link.
+ *   • Any ADDITIONAL numbers are stripped, so no contact number ever leaks and we
+ *     never paste the link twice.
+ *   • A whitespace run containing several numbers counts as one removal (all gone,
+ *     one CTA) — covers two numbers separated only by space/newline.
+ * ============================================================================
+ */
+
+// A digit, then 7+ phone-ish chars (digits/space/()/./-), then a digit.
+// Letters break the run, so cities, "innova", years embedded in words are safe.
+const PHONE_CANDIDATE = /\+?\d[\d\s().\-]{7,}\d/g;
+
+// A matched run is treated as phone number(s) if it carries 10+ actual digits.
+// (10 = one number; longer = multiple numbers in one run, all to be removed.)
+function looksLikePhone(digits) {
+  return digits.length >= 10;
+}
+
+/**
+ * Pick a CTA variant at random and substitute {link} with the app link.
+ * Randomising per-message reduces the "identical text" spam fingerprint.
+ */
+export function pickCta(ctaVariants, appLink) {
+  const variants =
+    Array.isArray(ctaVariants) && ctaVariants.length
+      ? ctaVariants
+      : ["Book this ride on our app: {link}"];
+  const choice = variants[Math.floor(Math.random() * variants.length)];
+  return choice.replace(/\{link\}/g, appLink || "");
+}
+
+/**
+ * Replace phone numbers in `text` with a rotating CTA + app link.
+ * Returns { text, replaced } where `replaced` is how many number-runs were hit.
+ */
+export function applyPromo(text, appLink, ctaVariants) {
+  if (!text) return { text: text || "", replaced: 0 };
+
+  const cta = pickCta(ctaVariants, appLink);
+  let count = 0;
+
+  let out = text.replace(PHONE_CANDIDATE, (match) => {
+    const digits = match.replace(/\D/g, "");
+    if (!looksLikePhone(digits)) return match; // too few digits → not a phone
+    count++;
+    return count === 1 ? cta : ""; // first → CTA(+link); extras removed
+  });
+
+  // Tidy whitespace left behind by removals.
+  out = out
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Safety net: validation guarantees a phone was present, but if the matcher
+  // somehow found none, still promote rather than forward a bare request.
+  if (count === 0) out = `${out} ${cta}`.trim();
+
+  return { text: out, replaced: count };
+}
+
+/**
  * 🔒 Anti-ban hardening
  * Generates a text-based fingerprint for deduplication.
  */

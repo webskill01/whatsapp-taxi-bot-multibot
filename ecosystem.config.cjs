@@ -188,5 +188,87 @@ module.exports = {
       },
     },
 
+    // =========================================================================
+    // bot-promoter  [starts at 80s, port 3005]  ← app-promotion bot
+    // Forwards rides normally during warm-up, then (once promoMode activates)
+    // rewrites the caller's number into the app link. See bots/bot-promoter/
+    // config.json — fill in real source/trial group IDs before starting.
+    // =========================================================================
+    {
+      name: "bot-promoter",
+      script: "./bots/bot-promoter/start.js",
+      cwd: "./",
+
+      instances: 1,
+      exec_mode: "fork",
+
+      autorestart: true,
+      watch: false,
+      restart_delay: 8000,
+      exp_backoff_restart_delay: 100,
+      min_uptime: 20000,
+      max_restarts: 5,
+
+      kill_timeout: 15000,
+      kill_signal: "SIGTERM",
+      shutdown_with_message: true,
+
+      max_memory_restart: "500M",
+
+      start_delay: 80000,           // 20s after bot-aayush
+
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      error_file: "./logs/bot-promoter-error.log",
+      out_file: "./logs/bot-promoter-out.log",
+      merge_logs: true,
+      log_type: "raw",
+
+      env: {
+        NODE_ENV: "production",
+        TZ: "Asia/Kolkata",
+        NODE_OPTIONS: "--max-old-space-size=480",
+        BOT_NAME: "bot-promoter",
+        STATS_PORT: "3005",
+      },
+    },
+
+    // =========================================================================
+    // control-panel  [admin + scoped-friend dashboard — NOT a WhatsApp bot]
+    // Owns PM2 actions (restart/reset), pause/disable toggles, and block-list
+    // submission. Keep behind cf-tunnel with access auth. No staggered start.
+    // =========================================================================
+    {
+      name: "control-panel",
+      script: "./control-panel/server.js",
+      cwd: "./",
+
+      instances: 1,
+      exec_mode: "fork",
+
+      autorestart: true,
+      watch: false,
+      restart_delay: 4000,
+      min_uptime: 10000,
+      max_restarts: 10,
+
+      kill_timeout: 5000,
+      kill_signal: "SIGTERM",
+
+      max_memory_restart: "200M",
+      start_delay: 0,
+
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      error_file: "./logs/control-panel-error.log",
+      out_file: "./logs/control-panel-out.log",
+      merge_logs: true,
+      log_type: "raw",
+
+      env: {
+        NODE_ENV: "production",
+        TZ: "Asia/Kolkata",
+        CONTROL_PORT: "3000",
+      },
+    },
+
   ],
 };

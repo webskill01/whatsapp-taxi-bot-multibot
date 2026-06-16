@@ -41,6 +41,7 @@ import path from "path";
 import { getMessageFingerprint } from "./filter.js";
 import { processMessage } from "./router.js";
 import { GLOBAL_CONFIG } from "./globalConfig.js";
+import { initRuntimeState } from "./runtimeState.js";
 
 // =============================================================================
 // CONSTANTS
@@ -108,6 +109,7 @@ export async function startBot(config, log, authDir) {
     rejectedByReconnectAgeGate: 0,
     rejectedNotMonitored: 0,
     rejectedRateLimit: 0,
+    rejectedPaused: 0,
     rejectedTooOld: 0,
     sendSuccesses: 0,
     sendFailures: 0,
@@ -1007,6 +1009,10 @@ export async function startBot(config, log, authDir) {
   log.info("   ✅ Dual city extraction: pickup AND drop");
   log.info("   ✅ /health endpoint added");
   log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+  // Live control flags (pause / disabled target groups). Attached to config so
+  // router.js can read them; mutated in place by the runtime.json watcher.
+  config.runtime = initRuntimeState(config.botDir || process.cwd(), log);
 
   loadFingerprints();
   startStatsServer();

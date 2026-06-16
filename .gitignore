@@ -26,6 +26,14 @@ baileys_auth/
 # ✅ Fingerprint Cache (Auto-generated per bot)
 **/.forwarded-messages.json
 .forwarded-messages.json
+**/fingerprints_*.json
+
+# ✅ Per-bot live control flags (pause / disabled targets) — runtime only
+**/runtime.json
+
+# ✅ Control panel secrets — access tokens + audit log, never push
+control-panel/tokens.json
+control-panel/audit.log
 
 # ✅ Volatile block/ignore data — edited directly on VPS, never pushed
 core/blocked-data.json

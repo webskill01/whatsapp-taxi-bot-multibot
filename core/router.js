@@ -26,6 +26,7 @@ import {
   extractCities,      // NEW: dual city extraction
   hasPhoneNumber,
   containsBlockedNumber,
+  applyPromo,         // promoter bot: number → app link transform
 } from "./filter.js";
 
 import { GLOBAL_CONFIG } from "./globalConfig.js";
@@ -168,6 +169,43 @@ function shuffleArray(arr) {
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return shuffled;
+}
+
+/**
+ * Decide whether promo mode is currently ACTIVE for this bot.
+ *   • promoMode.enabled must be true (only the promoter bot sets this)
+ *   • runtime.json promoActive (true/false) is a live manual override
+ *   • otherwise activates automatically once now >= promoMode.activateAt
+ *     (null activateAt = still in the warm-up phase → behave like a normal bot)
+ */
+function promoIsActive(config) {
+  const promo = config.promoMode;
+  if (!promo?.enabled) return false;
+
+  const override = config.runtime?.promoActive;
+  if (override === true) return true;
+  if (override === false) return false;
+
+  if (!promo.activateAt) return false;
+  const t = Date.parse(promo.activateAt);
+  return !Number.isNaN(t) && Date.now() >= t;
+}
+
+/**
+ * Remove target groups disabled via runtime.json (live "stop sharing to this
+ * group" toggle). Returns the original array untouched when nothing is disabled.
+ */
+function filterDisabledTargets(targets, runtime, log, pipelineName) {
+  const disabled = runtime?.disabledTargets;
+  if (!disabled || disabled.size === 0) return targets;
+
+  const active = targets.filter((groupId) => !disabled.has(groupId));
+  if (active.length < targets.length) {
+    log.info(
+      `🚫 [${pipelineName}] ${targets.length - active.length} target(s) disabled via runtime toggle — skipping`
+    );
+  }
+  return active;
 }
 
 // =============================================================================
@@ -324,6 +362,16 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
       return { wasRouted: false };
     }
 
+    // ── Live pause toggle (runtime.json) ──
+    // Bot stays connected but forwards nothing while paused. Checked first so a
+    // paused bot does zero routing work. Returns wasRouted:false so the caller
+    // unlocks the fingerprint (message can still forward once un-paused).
+    if (config.runtime?.paused) {
+      stats.rejectedPaused = (stats.rejectedPaused || 0) + 1;
+      log.info(`⏸️  Forwarding paused — message not routed`);
+      return { wasRouted: false };
+    }
+
     // Validation checks use the pre-extracted text
     const messageContent = text;
 
@@ -390,6 +438,20 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
 
     log.info(`🔀 Routing to pipelines...`);
 
+    // ── Promoter bot: rewrite the OUTGOING text (number → app link). Routing/city
+    //    matching below still uses the ORIGINAL messageContent; only what we SEND
+    //    changes. Normal bots skip this entirely (promoMode unset). ──
+    let outboundText = messageContent;
+    if (promoIsActive(config)) {
+      const { text: promoText, replaced } = applyPromo(
+        messageContent,
+        config.promoMode.appLink,
+        config.promoMode.ctaVariants
+      );
+      outboundText = promoText;
+      log.info(`📣 Promo active — replaced ${replaced} number(s) with app link`);
+    }
+
     let routedToPipeline = false;
     let totalSent = 0;
     let allCitiesFound = []; // Track all cities found across pipelines
@@ -403,12 +465,18 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
       if (pipeline.cityScope.includes("*")) {
         log.info(`🎯 Pipeline: ${pipeline.name} (wildcard) | ${pipeline.targetGroups.length} targets`);
 
-        const shuffledTargets = shuffleArray(pipeline.targetGroups);
+        const activeTargets = filterDisabledTargets(
+          pipeline.targetGroups,
+          config.runtime,
+          log,
+          pipeline.name
+        );
+        const shuffledTargets = shuffleArray(activeTargets);
 
         const { successCount } = await sendToMultipleGroupsSequential(
           sock,
           shuffledTargets,
-          messageContent,
+          outboundText,
           pipeline.name,
           stats,
           log,
@@ -448,12 +516,18 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
 
       log.info(`🎯 Pipeline: ${pipeline.name} | Pickup: ${pickup || "none"} | Drop: ${drop || "none"} | Matched: ${matchedCity} | ${pipeline.targetGroups.length} targets`);
 
-      const shuffledTargets = shuffleArray(pipeline.targetGroups);
+      const activeTargets = filterDisabledTargets(
+        pipeline.targetGroups,
+        config.runtime,
+        log,
+        pipeline.name
+      );
+      const shuffledTargets = shuffleArray(activeTargets);
 
       const { successCount } = await sendToMultipleGroupsSequential(
         sock,
         shuffledTargets,
-        messageContent,
+        outboundText,
         pipeline.name,
         stats,
         log,
