@@ -45,6 +45,11 @@
   .dlg-head { padding:16px 16px 8px; display:flex; justify-content:space-between; align-items:center; }
   .dlg-body { padding:0 16px 18px; max-height:72dvh; overflow:auto; }
   .dlg-head button, .dlg-body .grp button { width:auto; margin:0; padding:8px 12px; font-size:12px; }
+  .statline { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .stathd { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:14px 0 6px; font-weight:600; }
+  .statgrid { display:grid; grid-template-columns:1fr auto; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:11px; overflow:hidden; }
+  .statk { background:var(--bg2); padding:10px 12px; font-size:13px; color:var(--muted); }
+  .statv { background:var(--bg2); padding:10px 12px; font-size:13px; font-weight:600; text-align:right; font-variant-numeric:tabular-nums; }
   #toast { position:fixed; left:50%; bottom:calc(18px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(8px); background:#1f2430; border:1px solid var(--line); padding:11px 16px; border-radius:11px; opacity:0; transition:.22s; z-index:50; max-width:90vw; font-size:13px; }
   #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
 </style>
@@ -61,15 +66,20 @@
     <button id="pauseBtn" onclick="openPauseMenu()">⏸ Pause sharing…</button>
     <div class="row2">
       <button class="go" onclick="doAct('restart','Restart your bot now?')">↻ Restart</button>
-      <button class="danger" onclick="doAct('reset','Log out and start fresh? You will need to scan a new QR.')">⚠ Reset + QR</button>
+      <button id="stopBtn" class="danger" onclick="toggleStop()">⏹ Stop</button>
     </div>
-    <button onclick="showQR()">📱 Show QR (re-link WhatsApp)</button>
+    <div class="row2">
+      <button onclick="showStats()">📊 Stats</button>
+      <button onclick="showQR()">📱 Show QR</button>
+    </div>
+    <button class="danger" onclick="doAct('reset','Log out and start fresh? You will need to scan a new QR.')">⚠ Reset + QR (fix a corrupted login)</button>
     <div id="qr" style="text-align:center"></div>
   </div>
 
   <div class="card">
     <h2>Report a spam number</h2>
     <div class="muted">Adds to the shared block list for every bot. Duplicates are skipped automatically.</div>
+    <div class="muted" id="blockCount" style="margin-top:6px">—</div>
     <input id="numIn" placeholder="e.g. 98765 43210 or +91…" style="margin-top:10px" />
     <button class="go" onclick="submitBlock()">Add to block list</button>
   </div>
@@ -78,6 +88,10 @@
 <dialog id="pauseDlg">
   <div class="dlg-head"><strong>Sharing</strong><button onclick="pauseDlg.close()">✕</button></div>
   <div class="dlg-body" id="pauseBody"></div>
+</dialog>
+<dialog id="statsDlg">
+  <div class="dlg-head"><strong id="statsTitle">Stats</strong><button onclick="statsDlg.close()">✕</button></div>
+  <div class="dlg-body" id="statsBody"></div>
 </dialog>
 <div id="toast"></div>
 
@@ -102,6 +116,20 @@ async function load(){
   const pb = document.getElementById("pauseBtn");
   pb.textContent = paused ? "▶ Sharing paused — manage…" : dis ? `⏸ Sharing (${dis} off)…` : "⏸ Pause sharing…";
   pb.className = (paused||dis) ? "go" : "";
+  const sb = document.getElementById("stopBtn");
+  sb.textContent = online ? "⏹ Stop" : "▶ Start";
+  sb.className = online ? "danger" : "go";
+  loadCounts();
+}
+function toggleStop(){
+  const online = BOT?.pm2?.status === "online";
+  if (online) doAct('stop','Stop your bot? It goes offline until you Start it again.');
+  else doAct('restart','Start your bot now?');
+}
+async function loadCounts(){
+  const r = await api("/api/block/list");
+  if (r.counts) document.getElementById("blockCount").textContent =
+    `🚫 ${r.counts.blockedPhoneNumbers} spam numbers blocked · ${r.counts.ignoreIfContains} ignore phrases`;
 }
 async function doAct(action, msg){
   if (!confirm(msg)) return;
@@ -144,6 +172,55 @@ async function menuTarget(groupId, disabled){
   if (r.error){ toast(r.error); return; }
   toast(disabled?'Group sharing paused':'Group sharing resumed'); await load(); openPauseMenu();
 }
+function statGrid(pairs){
+  return `<div class="statgrid">` + pairs.map(([k,v])=>
+    `<div class="statk">${esc(k)}</div><div class="statv">${esc(v)}</div>`).join("") + `</div>`;
+}
+function fmtAgo(iso){
+  if (!iso) return "never";
+  const ms = Date.now() - Date.parse(iso); if (isNaN(ms)) return "—";
+  const m = Math.floor(ms/60000); if (m < 1) return "just now";
+  if (m < 60) return m+"m ago"; const h=Math.floor(m/60);
+  return h < 24 ? h+"h ago" : Math.floor(h/24)+"d ago";
+}
+function renderStats(r){
+  const s = r.stats || {};
+  const fail = s.sendFailures ?? 0, ok = s.sendSuccesses ?? 0, total = ok + fail;
+  const head = `<div class="statline">
+    <span class="badge ${r.operational?'on':'off'}">${r.operational?'operational':'down'}</span>
+    <span class="muted">uptime ${esc(r.uptime||'?')}</span></div>`;
+  return head
+    + `<div class="stathd">Throughput</div>`
+    + statGrid([
+        ["Messages processed", s.totalProcessed ?? 0],
+        ["Forwarded OK", ok],
+        ["Send failures", fail],
+        ["Failure rate", total ? ((fail/total)*100).toFixed(1)+"%" : "0%"],
+      ])
+    + `<div class="stathd">Connection</div>`
+    + statGrid([
+        ["Reconnects", r.reconnect?.totalReconnects ?? 0],
+        ["Last reconnect", fmtAgo(r.reconnect?.lastReconnectTime)],
+      ])
+    + `<div class="stathd">Routing</div>`
+    + statGrid([
+        ["Source groups", r.config?.sourceGroups ?? '—'],
+        ["Pipelines", r.config?.pipelines ?? '—'],
+      ]);
+}
+let statsTimer = null;
+async function showStats(){
+  document.getElementById("statsTitle").textContent = (BOT?.id || '') + " · Stats";
+  const body = document.getElementById("statsBody");
+  body.innerHTML = "<div class='muted'>Fetching stats…</div>"; statsDlg.showModal();
+  const tick = async () => {
+    const r = await api(`/api/bot/${BOT.id}/stats`);
+    if (r.error || !r.stats){ body.innerHTML = `<div class="off">${esc(r.error||'Bot not connected')}</div>`; return; }
+    body.innerHTML = renderStats(r);
+  };
+  await tick(); clearInterval(statsTimer); statsTimer = setInterval(tick, 4000);
+}
+statsDlg.addEventListener("close", ()=>clearInterval(statsTimer));
 async function showQR(){
   const box = document.getElementById("qr"); box.innerHTML = "<div class='muted'>Loading QR…</div>";
   const tick = async () => {
@@ -159,7 +236,7 @@ async function submitBlock(){
   const p=[]; if(r.added?.length)p.push(`added ${r.added.join(", ")}`);
   if(r.dupes?.length)p.push(`already blocked ${r.dupes.join(", ")}`);
   if(r.invalid?.length)p.push(`invalid ${r.invalid.join(", ")}`);
-  toast(p.join(" · ")||"nothing to do"); document.getElementById("numIn").value="";
+  toast(p.join(" · ")||"nothing to do"); document.getElementById("numIn").value=""; loadCounts();
 }
 if (!token) document.getElementById("statusLine").innerHTML = "<span class='off'>Missing ?token= in URL</span>";
 else { load(); setInterval(load, 15000); }

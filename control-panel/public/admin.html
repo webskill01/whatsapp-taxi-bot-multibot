@@ -76,6 +76,12 @@
   details { margin:8px 0; border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
   summary { cursor:pointer; font-weight:550; font-size:13px; }
 
+  .statline { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .stathd { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:14px 0 6px; font-weight:600; }
+  .statgrid { display:grid; grid-template-columns:1fr auto; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .statk { background:var(--bg2); padding:9px 12px; font-size:13px; color:var(--muted); }
+  .statv { background:var(--bg2); padding:9px 12px; font-size:13px; font-weight:600; text-align:right; font-variant-numeric:tabular-nums; }
+
   #toast { position:fixed; left:50%; bottom:calc(20px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(8px); background:#1f2430; border:1px solid var(--line); padding:11px 16px; border-radius:11px; opacity:0; transition:.22s; pointer-events:none; z-index:50; max-width:90vw; font-size:13px; box-shadow:0 10px 30px rgba(0,0,0,.4); }
   #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
   img.qr { width:min(280px,72vw); border-radius:12px; margin-top:10px; }
@@ -127,6 +133,10 @@
   <div class="dlg-head"><strong id="grpTitle">Groups</strong><button class="sm" onclick="grpDlg.close()">✕</button></div>
   <div class="dlg-body" id="grpBody"></div>
 </dialog>
+<dialog id="statsDlg">
+  <div class="dlg-head"><strong id="statsTitle">Stats</strong><button class="sm" onclick="statsDlg.close()">✕</button></div>
+  <div class="dlg-body" id="statsBody"></div>
+</dialog>
 <dialog id="listDlg">
   <div class="dlg-head"><strong>Manage block list</strong><button class="sm" onclick="listDlg.close()">✕</button></div>
   <div class="dlg-body" id="listBody"></div>
@@ -166,9 +176,11 @@ function botRow(b){
     </div>
     <div class="actions">
       <button class="${paused||dis?'go':''}" onclick="openPauseMenu('${b.id}')">${sharingLabel}</button>
+      <button onclick="showStats('${b.id}')">📊 Stats</button>
       <button onclick="showGroups('${b.id}')">👥 Groups</button>
       <button onclick="showQR('${b.id}')">📱 QR</button>
-      <button class="go" onclick="act('${b.id}','restart','Restart ${b.id}?')">↻ Restart</button>
+      <button class="go" onclick="act('${b.id}','restart','${online?'Restart':'Start'} ${b.id}?')">${online?'↻ Restart':'▶ Start'}</button>
+      ${online?`<button class="danger" onclick="act('${b.id}','stop','Stop ${b.id}? It goes offline until you Start/Restart it.')">⏹ Stop</button>`:''}
       <button class="danger" onclick="act('${b.id}','reset','RESET AUTH for ${b.id}? It logs the bot out and needs a new QR scan.')">⚠ Reset</button>
     </div>
   </div>`;
@@ -238,6 +250,70 @@ async function showQR(id){
   await tick(); clearInterval(qrTimer); qrTimer = setInterval(tick, 4000);
 }
 qrDlg.addEventListener("close", ()=>clearInterval(qrTimer));
+
+// Live stats popup (proxied from the bot's own /stats port), same pattern as Groups.
+// Compact two-column metric grid + section headers (no raw JSON dump).
+function statGrid(pairs){
+  return `<div class="statgrid">` + pairs.map(([k,v])=>
+    `<div class="statk">${esc(k)}</div><div class="statv">${esc(v)}</div>`).join("") + `</div>`;
+}
+function fmtAgo(iso){
+  if (!iso) return "never";
+  const ms = Date.now() - Date.parse(iso); if (isNaN(ms)) return "—";
+  const m = Math.floor(ms/60000); if (m < 1) return "just now";
+  if (m < 60) return m+"m ago"; const h=Math.floor(m/60);
+  return h < 24 ? h+"h ago" : Math.floor(h/24)+"d ago";
+}
+function renderStats(r){
+  const s = r.stats || {};
+  const fail = s.sendFailures ?? 0, ok = s.sendSuccesses ?? 0;
+  const total = ok + fail;
+  const failPct = total ? ((fail/total)*100).toFixed(1)+"%" : "0%";
+  const head = `<div class="statline">
+    <span class="badge ${r.operational?'on':'off'}">${r.operational?'operational':'down'}</span>
+    <span class="muted">uptime ${esc(r.uptime||'?')}</span>
+  </div>`;
+  return head
+    + `<div class="stathd">Throughput</div>`
+    + statGrid([
+        ["Messages processed", s.totalProcessed ?? 0],
+        ["Forwarded OK", ok],
+        ["Send failures", fail],
+        ["Failure rate", failPct],
+      ])
+    + `<div class="stathd">Filtering</div>`
+    + statGrid([
+        ["Duplicates skipped", s.duplicatesSkipped ?? 0],
+        ["Replays skipped", s.replayIdsSkipped ?? 0],
+        ["Races prevented", s.racePrevented ?? 0],
+        ["Blocked-sender hits", s.rejectedBlockedSender ?? 0],
+      ])
+    + `<div class="stathd">Connection</div>`
+    + statGrid([
+        ["Reconnects", r.reconnect?.totalReconnects ?? 0],
+        ["Last reconnect", fmtAgo(r.reconnect?.lastReconnectTime)],
+        ["Fingerprint cache", r.cache?.fingerprintSet ?? 0],
+        ["Replay-ID cache", r.cache?.replayIdSet ?? 0],
+      ])
+    + `<div class="stathd">Config</div>`
+    + statGrid([
+        ["Source groups", r.config?.sourceGroups ?? '—'],
+        ["Pipelines", r.config?.pipelines ?? '—'],
+      ]);
+}
+let statsTimer = null;
+async function showStats(id){
+  document.getElementById("statsTitle").textContent = id + " · Stats";
+  const body = document.getElementById("statsBody");
+  body.innerHTML = "<div class='muted'>Fetching stats…</div>"; statsDlg.showModal();
+  const tick = async () => {
+    const r = await api(`/api/bot/${id}/stats`);
+    if (r.error || !r.stats){ body.innerHTML = `<div class="off">${esc(r.error||'Bot not connected')}</div>`; return; }
+    body.innerHTML = renderStats(r);
+  };
+  await tick(); clearInterval(statsTimer); statsTimer = setInterval(tick, 4000);
+}
+statsDlg.addEventListener("close", ()=>clearInterval(statsTimer));
 
 async function showGroups(id){
   document.getElementById("grpTitle").textContent = id + " · Groups";

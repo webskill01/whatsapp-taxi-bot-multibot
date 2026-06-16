@@ -189,7 +189,27 @@ app.post("/api/bot/:id/restart", requireAuth, scopeToBot, async (req, res) => {
   }
 });
 
-// Reset auth = stop → delete auth + fingerprint + runtime → start → re-pair via QR
+// Stop the bot process (stays in the PM2 list, just not running). Use Restart
+// to bring it back online — `pm2 restart` starts a stopped process.
+app.post("/api/bot/:id/stop", requireAuth, scopeToBot, async (req, res) => {
+  try {
+    await pm2("stop", req.params.id);
+    audit(who(req), "stop", req.params.id);
+    res.json({ ok: true, message: `${req.params.id} stopped` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reset auth — the safe corruption-recovery sequence a friend should follow:
+//   1. pm2 stop <bot>          (kill the process so files aren't held open)
+//   2. wait 1.5s               (let Windows/Linux release the file handles)
+//   3. delete baileys_auth/    (the corrupted WhatsApp session)
+//   4. delete fingerprints_*.json + .forwarded-messages.json (dedup cache)
+//   5. pm2 start <bot>         (fresh boot → emits a new QR to scan)
+// We deliberately STOP-then-clear-then-START rather than wiping a live process,
+// so the bot never reads a half-deleted auth dir. runtime.json (pause/disabled
+// prefs) is kept — a reset is about WhatsApp auth only, not the friend's settings.
 app.post("/api/bot/:id/reset", requireAuth, scopeToBot, async (req, res) => {
   const bot = botById(req.params.id);
   try {
@@ -203,9 +223,8 @@ app.post("/api/bot/:id/reset", requireAuth, scopeToBot, async (req, res) => {
         rmSync(join(bot.dir, f), { force: true });
       }
     }
-    // Keep runtime.json (pause/disabled prefs) — reset is about WhatsApp auth only.
 
-    await pm2("restart", bot.id);
+    await pm2("start", bot.id);
     audit(who(req), "reset-auth", bot.id);
     res.json({ ok: true, message: `${bot.id} auth wiped — scan the new QR to re-pair` });
   } catch (err) {
