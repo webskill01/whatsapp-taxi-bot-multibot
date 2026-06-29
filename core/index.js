@@ -649,6 +649,11 @@ export async function startBot(config, log, authDir) {
           log.info(`   Error: ${errorMsg || "none"}`);
           log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
+          // Drop any QR from the dead socket — a fresh one arrives after reconnect.
+          // Without this, /qr keeps serving a stale QR that will never scan.
+          latestQR = null;
+          qrTimestamp = null;
+
           destroySocket("connection closed");
 
           if (statusCode === DisconnectReason.loggedOut) {
@@ -891,12 +896,9 @@ export async function startBot(config, log, authDir) {
         return;
       }
 
-      const qrAge = Date.now() - (qrTimestamp || 0);
-      if (qrAge > 20000) {
-        res.status(410).send("QR code expired. Please wait for a new one (auto-refreshes every ~20s).");
-        return;
-      }
-
+      // No expiry gate: latestQR is always from the live connection attempt
+      // (cleared on disconnect), so the freshest QR we hold is the right one to
+      // serve. Baileys rotates it ~every 20s; the page just auto-refreshes.
       try {
         const qrImage = await QRCode.toBuffer(latestQR, {
           type: "png",
@@ -916,19 +918,12 @@ export async function startBot(config, log, authDir) {
 
     app.get("/qr/base64", async (req, res) => {
       if (!latestQR) {
-        res.status(404).json({ 
-          error: "QR code not available",
+        res.status(404).json({
+          error: botFullyOperational
+            ? "Bot is connected — no QR needed"
+            : "QR not ready yet — bot is starting",
           qrAvailable: false,
-        });
-        return;
-      }
-
-      const qrAge = Date.now() - (qrTimestamp || 0);
-      if (qrAge > 20000) {
-        res.status(410).json({ 
-          error: "QR code expired",
-          qrAvailable: false,
-          message: "Please wait for a new QR code",
+          connected: botFullyOperational,
         });
         return;
       }
@@ -938,11 +933,12 @@ export async function startBot(config, log, authDir) {
           width: 400,
           margin: 2,
         });
-        res.json({ 
+        res.json({
           qr: qrDataURL,
           qrAvailable: true,
+          connected: false,
           timestamp: qrTimestamp,
-          age: qrAge,
+          age: Date.now() - (qrTimestamp || 0),
         });
       } catch (err) {
         log.error(`❌ QR generation failed: ${err.message}`);

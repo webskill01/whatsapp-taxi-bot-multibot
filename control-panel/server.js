@@ -123,6 +123,20 @@ const who = (req) => (req.auth.role === "admin" ? "admin" : `friend:${req.auth.b
 async function pm2(action, id) {
   await execAsync(`pm2 ${action} ${id}`, { cwd: ROOT });
 }
+// Stop and CONFIRM via pm2 jlist. On Windows `pm2 stop` often exits non-zero
+// (writes "^C" to stderr from the interrupt it sends) even when the stop
+// succeeds, so we ignore its exit code and poll the real status instead. This
+// is what made Reset flaky — it aborted on that bogus error before wiping auth.
+async function pm2StopAndWait(id, timeoutMs = 10000) {
+  try { await pm2("stop", id); } catch { /* exit code unreliable on Windows — verify below */ }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const map = await pm2StatusMap();
+    if (!map[id] || map[id].status === "stopped") return true;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return false;
+}
 async function pm2StatusMap() {
   try {
     const { stdout } = await execAsync("pm2 jlist", { cwd: ROOT });
@@ -193,34 +207,43 @@ app.post("/api/bot/:id/restart", requireAuth, scopeToBot, async (req, res) => {
 // to bring it back online — `pm2 restart` starts a stopped process.
 app.post("/api/bot/:id/stop", requireAuth, scopeToBot, async (req, res) => {
   try {
-    await pm2("stop", req.params.id);
+    const stopped = await pm2StopAndWait(req.params.id);
     audit(who(req), "stop", req.params.id);
-    res.json({ ok: true, message: `${req.params.id} stopped` });
+    res.json({
+      ok: true,
+      message: stopped ? `${req.params.id} stopped` : `${req.params.id} stop requested (still shutting down)`,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Reset auth — the safe corruption-recovery sequence a friend should follow:
-//   1. pm2 stop <bot>          (kill the process so files aren't held open)
-//   2. wait 1.5s               (let Windows/Linux release the file handles)
-//   3. delete baileys_auth/    (the corrupted WhatsApp session)
-//   4. delete fingerprints_*.json + .forwarded-messages.json (dedup cache)
-//   5. pm2 start <bot>         (fresh boot → emits a new QR to scan)
+//   1. stop <bot> + CONFIRM stopped (so files aren't held open / half-read)
+//   2. delete baileys_auth/    (the corrupted WhatsApp session)
+//   3. delete fingerprints_*.json + .forwarded-messages.json (dedup cache)
+//   4. pm2 start <bot>         (fresh boot → emits a new QR to scan)
 // We deliberately STOP-then-clear-then-START rather than wiping a live process,
 // so the bot never reads a half-deleted auth dir. runtime.json (pause/disabled
 // prefs) is kept — a reset is about WhatsApp auth only, not the friend's settings.
 app.post("/api/bot/:id/reset", requireAuth, scopeToBot, async (req, res) => {
   const bot = botById(req.params.id);
   try {
-    await pm2("stop", bot.id);
-    await new Promise((r) => setTimeout(r, 1500)); // let file handles release
+    const stopped = await pm2StopAndWait(bot.id);
+    if (!stopped) throw new Error("Bot did not stop in time — try Reset again");
+    await new Promise((r) => setTimeout(r, 800)); // brief grace for handle release
 
+    // rmSync can transiently fail (Windows file locks); retry until the dir is gone.
     const authDir = join(bot.dir, "baileys_auth");
-    if (existsSync(authDir)) rmSync(authDir, { recursive: true, force: true });
+    for (let i = 0; existsSync(authDir) && i < 6; i++) {
+      try { rmSync(authDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 }); }
+      catch { await new Promise((r) => setTimeout(r, 500)); }
+    }
+    if (existsSync(authDir)) throw new Error("Could not delete baileys_auth (file locked) — try Reset again");
+
     for (const f of readdirSync(bot.dir)) {
       if (f.startsWith("fingerprints_") || f === ".forwarded-messages.json") {
-        rmSync(join(bot.dir, f), { force: true });
+        try { rmSync(join(bot.dir, f), { force: true, maxRetries: 3, retryDelay: 300 }); } catch { /* non-fatal */ }
       }
     }
 

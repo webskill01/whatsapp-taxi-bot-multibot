@@ -190,6 +190,7 @@ async function act(id, action, confirmMsg){
   if (!confirm(confirmMsg)) return;
   const r = await post(`/api/bot/${id}/${action}`, {});
   toast(r.message || r.error || "done");
+  if (action === "reset" && r.ok) setTimeout(() => showQR(id), 4000);
   setTimeout(loadBots, 1500);
 }
 
@@ -241,12 +242,25 @@ async function menuTarget(id, groupId, disabled){
 async function showQR(id){
   document.getElementById("qrTitle").textContent = id + " · QR";
   const body = document.getElementById("qrBody");
-  body.innerHTML = "<div class='muted'>Loading QR…</div>"; qrDlg.showModal();
+  // Build the structure once; tick() only swaps the image src + note. Keeping the
+  // last good QR on screen means a transient miss never wipes a scannable code.
+  body.innerHTML = `<div class="muted">WhatsApp → Linked devices → Link a device</div>
+    <img id="qrImg" class="qr" style="display:none"/>
+    <div id="qrNote" class="muted" style="margin-top:8px">Loading QR…</div>
+    <button class="sm" id="qrRefresh" style="margin-top:10px">🔄 Refresh now</button>`;
+  const img = body.querySelector("#qrImg");
+  const note = body.querySelector("#qrNote");
   const tick = async () => {
-    const r = await api(`/api/bot/${id}/qr`);
-    if (r.qr) body.innerHTML = `<div class="muted">WhatsApp → Linked devices → Link a device</div><img class="qr" src="${r.qr}"/>`;
-    else body.innerHTML = `<div class="muted">${esc(r.error||'No QR right now (bot may be connected). Use Reset to force a new one.')}</div>`;
+    try {
+      const r = await api(`/api/bot/${id}/qr`);
+      if (r.qr){ img.src = r.qr; img.style.display = "block"; note.textContent = "Scan this QR with WhatsApp"; }
+      else if (r.connected){ img.style.display = "none"; note.textContent = "✅ Connected — no QR needed"; clearInterval(qrTimer); }
+      else if (img.src){ note.textContent = "Refreshing… waiting for a new QR"; } // keep last image visible
+      else { note.textContent = esc(r.error || "Bot is starting — waiting for QR…"); }
+    } catch { note.textContent = "Reconnecting…"; }
   };
+  body.querySelector("#qrRefresh").onclick = tick;
+  qrDlg.showModal();
   await tick(); clearInterval(qrTimer); qrTimer = setInterval(tick, 4000);
 }
 qrDlg.addEventListener("close", ()=>clearInterval(qrTimer));
