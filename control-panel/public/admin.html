@@ -330,19 +330,15 @@ async function showStats(id){
 }
 statsDlg.addEventListener("close", ()=>clearInterval(statsTimer));
 
-let grpBotId = null, PIPELINES = [];
+let grpBotId = null;
 
 async function showGroups(id){
   grpBotId = id;
   document.getElementById("grpTitle").textContent = id + " · Groups";
   const body = document.getElementById("grpBody");
   body.innerHTML = "<div class='muted'>Fetching groups…</div>"; grpDlg.showModal();
-  const [r, cfg] = await Promise.all([
-    api(`/api/bot/${id}/groups`),
-    api(`/api/bot/${id}/config`),
-  ]);
+  const r = await api(`/api/bot/${id}/groups`);
   if (!r.groups){ body.innerHTML = `<div class="off">${esc(r.error||'Bot not connected')}</div>`; return; }
-  PIPELINES = (cfg.pipelines || []).map(p=>p.name);
   // Unmonitored groups first — those are the ones you are usually here to add.
   const sorted = [...r.groups].sort((a,b)=> (a.type==='other'?0:1) - (b.type==='other'?0:1));
   body.innerHTML = `<div class="muted" style="margin-bottom:8px">${r.totalGroups} groups · ${r.breakdown.unmonitored} new/unmonitored · add/remove applies live, no restart</div>`
@@ -350,22 +346,14 @@ async function showGroups(id){
 }
 
 function groupRow(g){
+  // Source groups are the only ones that churn — you add new ones and drop the
+  // ones you get kicked from. Pipeline targets are your own groups and never
+  // change, so they get no buttons (the API still accepts them if needed).
   const btns = [`<button class="sm" onclick="copyId('${g.id}')">Copy ID</button>`];
   if (g.type === 'other'){
     btns.push(`<button class="sm go" onclick="cfgGroup('add','source','${g.id}')">+ Source</button>`);
-    btns.push(`<select class="sm" onchange="cfgGroup('add','target','${g.id}',this.value)">
-      <option value="">+ Target…</option>${PIPELINES.map(n=>`<option>${esc(n)}</option>`).join("")}</select>`);
   } else if (g.type === 'source'){
     btns.push(`<button class="sm danger" onclick="cfgGroup('remove','source','${g.id}')">− Remove</button>`);
-  } else if (g.type === 'target'){
-    const names = (g.pipelineInfo || []).map(p=>p.name);
-    if (names.length <= 1){
-      btns.push(`<button class="sm danger" onclick="cfgGroup('remove','target','${g.id}','${names[0]||'*'}')">− Remove</button>`);
-    } else {
-      // Same group feeds several pipelines — say which one to drop it from.
-      btns.push(`<select class="sm" onchange="cfgGroup('remove','target','${g.id}',this.value)">
-        <option value="">− Remove from…</option>${names.map(n=>`<option>${esc(n)}</option>`).join("")}</select>`);
-    }
   }
   const pipes = (g.pipelineInfo || []).map(p=>p.name).join(", ");
   return `<div class="grp ${g.type==='other'?'newgrp':''}">
@@ -375,10 +363,9 @@ function groupRow(g){
   </div>`;
 }
 
-async function cfgGroup(action, role, groupId, pipeline){
-  if (role === 'target' && pipeline === '') return;   // placeholder option
+async function cfgGroup(action, role, groupId){
   if (action === 'remove' && !confirm("Remove this group from " + grpBotId + "'s config?")) return;
-  const r = await post(`/api/bot/${grpBotId}/config/group`, { action, role, groupId, pipeline });
+  const r = await post(`/api/bot/${grpBotId}/config/group`, { action, role, groupId });
   toast(r.message || r.error || "done");
   if (r.ok) showGroups(grpBotId);
 }
