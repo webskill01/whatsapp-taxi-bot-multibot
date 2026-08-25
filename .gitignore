@@ -36,6 +36,7 @@ baileys_auth/
 
 # ✅ Control panel secrets — access tokens + audit log, never push
 control-panel/tokens.json
+control-panel/peers.json
 control-panel/audit.log
 
 # ✅ Volatile block/ignore data — edited directly on VPS, never pushed
