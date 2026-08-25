@@ -55,6 +55,32 @@ import { watchConfigGroups } from "./configLoader.js";
 const groupNameCache = new Map();
 let groupNamesPath = null;
 
+// groupMetadata shares ONE rate budget with message sending — a burst of name
+// lookups makes real forwards fail with rate-overlimit. So /groups resolves at
+// most a handful of names per call, one at a time, and stops entirely for a while
+// the moment WhatsApp pushes back. Names are a display nicety; sends are not.
+const NAME_FETCH_PER_REQUEST = 6;      // max groupMetadata calls per /groups hit
+const NAME_FETCH_GAP         = 1200;   // ms between them (sequential, never parallel)
+const NAME_FETCH_COOLDOWN    = 15 * 60 * 1000;
+let nameFetchPausedUntil = 0;
+
+export async function metadataThrottled(sock, groupId, log) {
+  if (Date.now() < nameFetchPausedUntil) return null;
+  try {
+    const md = await sock.groupMetadata(groupId);
+    await new Promise((r) => setTimeout(r, NAME_FETCH_GAP));
+    return md;
+  } catch (err) {
+    if (/rate-overlimit/i.test(err?.message || "")) {
+      nameFetchPausedUntil = Date.now() + NAME_FETCH_COOLDOWN;
+      log.warn("⚠️  WhatsApp rate-limited group lookups — pausing name resolution for 15m");
+    } else {
+      log.warn(`⚠️  Failed to fetch name for ${groupId}: ${err.message}`);
+    }
+    return null;
+  }
+}
+
 function loadGroupNames(botDir, log) {
   groupNamesPath = path.join(botDir, "group-names.json");
   try {
@@ -623,6 +649,22 @@ export async function startBot(config, log, authDir) {
       // CREDS.UPDATE
       // =======================================================================
 
+      // Free group names: Baileys hands us subjects whenever a group is added or
+      // renamed. Harvesting those costs zero API calls, so the cache fills itself
+      // and /groups needs fewer throttled lookups over time.
+      const harvestNames = (items) => {
+        let changed = false;
+        for (const g of items || []) {
+          if (g?.id && isRealGroupName(g.subject) && groupNameCache.get(g.id) !== g.subject) {
+            groupNameCache.set(g.id, g.subject);
+            changed = true;
+          }
+        }
+        if (changed) saveGroupNames(log);
+      };
+      sock.ev.on("groups.upsert", harvestNames);
+      sock.ev.on("groups.update", harvestNames);
+
       sock.ev.on("creds.update", async () => {
         if (saveCreds) {
           await saveCreds();
@@ -846,9 +888,7 @@ export async function startBot(config, log, authDir) {
           createdAt: chat.creation ? new Date(chat.creation * 1000).toISOString() : null,
         }));
 
-        // Names: serve from the on-disk cache first, then fetch (in small batches,
-        // to stay under WhatsApp's metadata rate limit) only the ones we have
-        // never resolved. Anything already cached costs zero calls.
+        // Names: serve from the on-disk cache first — anything cached costs zero calls.
         let namesChanged = false;
         for (const g of allGroups) {
           if (isRealGroupName(g.name)) {
@@ -861,29 +901,24 @@ export async function startBot(config, log, authDir) {
           }
         }
 
+        // Resolve the still-nameless ones one at a time, within a small budget.
+        // Whatever is left keeps its "Unknown Group" label and gets picked up on a
+        // later panel open — each resolved name is cached to disk, so this converges.
         const unnamed = allGroups.filter((g) => !isRealGroupName(g.name));
-        const REFETCH_BATCH = 5;
-        const REFETCH_DELAY = 400; // ms between batches
-        for (let i = 0; i < unnamed.length; i += REFETCH_BATCH) {
-          await Promise.all(
-            unnamed.slice(i, i + REFETCH_BATCH).map(async (g) => {
-              try {
-                const metadata = await sock.groupMetadata(g.id);
-                if (metadata?.subject) {
-                  g.name = metadata.subject;
-                  g.participantsCount = metadata.participants?.length || g.participantsCount;
-                  groupNameCache.set(g.id, metadata.subject);
-                  namesChanged = true;
-                }
-              } catch (err) {
-                log.warn(`⚠️  Failed to fetch name for ${g.id}: ${err.message}`);
-              }
-            })
-          );
-          if (i + REFETCH_BATCH < unnamed.length) {
-            await new Promise((r) => setTimeout(r, REFETCH_DELAY));
+        let fetchBudget = NAME_FETCH_PER_REQUEST;
+        for (const g of unnamed) {
+          if (fetchBudget <= 0) break;
+          const metadata = await metadataThrottled(sock, g.id, log);
+          if (!metadata) break;               // rate-limited or gone — stop for now
+          fetchBudget--;
+          if (metadata.subject) {
+            g.name = metadata.subject;
+            g.participantsCount = metadata.participants?.length || g.participantsCount;
+            groupNameCache.set(g.id, metadata.subject);
+            namesChanged = true;
           }
         }
+
         if (namesChanged) saveGroupNames(log);
 
         const sourceSet = new Set(config.sourceGroupIds);
