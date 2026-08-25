@@ -210,3 +210,86 @@ export function loadConfig(botDir) {
 
   return { config: mergedConfig, ENV };
 }
+
+// ============================================================================
+// GROUP-FIELD VALIDATION (used by the config hot-reload below)
+// ============================================================================
+function isValidGroupIdStrict(id) {
+  return typeof id === "string" && id.endsWith("@g.us") && id.length > 10;
+}
+
+/** Returns an array of human-readable errors; empty array = valid. */
+export function validateGroupFields(cfg) {
+  const errs = [];
+
+  if (!Array.isArray(cfg.sourceGroupIds)) {
+    errs.push("config.sourceGroupIds must be an array");
+  } else {
+    const bad = cfg.sourceGroupIds.filter((id) => !isValidGroupIdStrict(id));
+    if (bad.length) errs.push(`Invalid source group IDs: ${bad.join(", ")}`);
+  }
+
+  if (!Array.isArray(cfg.pipelines) || cfg.pipelines.length === 0) {
+    errs.push("config.pipelines must be a non-empty array");
+  } else {
+    for (const [i, pl] of cfg.pipelines.entries()) {
+      const label = pl?.name || `pipeline ${i}`;
+      if (!pl?.name) errs.push(`Pipeline ${i} is missing 'name'`);
+      if (!Array.isArray(pl?.cityScope)) errs.push(`Pipeline '${label}' cityScope must be an array`);
+      if (!Array.isArray(pl?.targetGroups) || pl.targetGroups.length === 0) {
+        errs.push(`Pipeline '${label}' must have at least one targetGroup`);
+      } else {
+        const bad = pl.targetGroups.filter((id) => !isValidGroupIdStrict(id));
+        if (bad.length) errs.push(`Pipeline '${label}' has invalid group IDs: ${bad.join(", ")}`);
+      }
+    }
+  }
+
+  return errs;
+}
+
+// ============================================================================
+// HOT-RELOAD — routing group lists only (control panel writes config.json)
+// ============================================================================
+/**
+ * Watches the bot's config.json and re-applies sourceGroupIds + pipelines onto
+ * the live config object in place, so adding/removing a group in the control
+ * panel takes effect with NO restart (same pattern as runtime.json).
+ *
+ * Only those two fields are re-applied — everything else stays boot-time. A
+ * malformed or invalid edit is IGNORED (previous groups stay live) rather than
+ * crashing a running bot.
+ */
+export function watchConfigGroups(config, log) {
+  const configPath = path.join(config.botDir, "config.json");
+  let debounce = null;
+
+  try {
+    fs.watchFile(configPath, { interval: 1000 }, (curr, prev) => {
+      if (curr.mtimeMs === prev.mtimeMs) return;
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        let next;
+        try {
+          next = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        } catch (err) {
+          log.warn(`⚠️  config.json reload failed to parse — keeping current groups: ${err.message}`);
+          return;
+        }
+        const errs = validateGroupFields(next);
+        if (errs.length) {
+          log.warn(`⚠️  config.json reload rejected — keeping current groups: ${errs.join("; ")}`);
+          return;
+        }
+        config.sourceGroupIds = next.sourceGroupIds;
+        config.pipelines      = next.pipelines;
+        log.info(
+          `🔄 config.json reloaded — ${config.sourceGroupIds.length} source groups, ` +
+          `${config.pipelines.length} pipelines (${config.pipelines.reduce((n, pl) => n + pl.targetGroups.length, 0)} targets)`
+        );
+      }, 300);
+    });
+  } catch (err) {
+    log.warn(`⚠️  could not watch config.json (live group edits disabled): ${err.message}`);
+  }
+}

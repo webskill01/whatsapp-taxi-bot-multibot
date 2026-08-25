@@ -33,6 +33,7 @@ import { randomBytes } from "crypto";
 import {
   readData, writeData, addNumbersToField, addIgnorePhrase, checkNumber,
 } from "../core/blockData.js";
+import { validateGroupFields } from "../core/configLoader.js";
 
 const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -301,6 +302,105 @@ app.get("/api/bot/:id/groups", requireAuth, scopeToBot, (req, res) =>
   proxyBot(botById(req.params.id), "/groups", res));
 app.get("/api/bot/:id/stats", requireAuth, scopeToBot, (req, res) =>
   proxyBot(botById(req.params.id), "/stats", res));
+
+// ============================================================================
+// ROUTES — live group config (ADMIN only)
+// ============================================================================
+// Adding a group used to mean: edit config.json → commit → push → pull on the VM
+// → pm2 restart. Each bot now watches its own config.json (watchConfigGroups in
+// core/configLoader.js), so writing the file here is enough — routing picks the
+// change up in ~1.3s with no restart and no QR re-scan.
+function readBotConfig(dir)  { return JSON.parse(readFileSync(join(dir, "config.json"), "utf8")); }
+function writeBotConfig(dir, cfg) {
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg, null, 2) + "\n", "utf8");
+}
+
+// A group may hold exactly ONE role. Source + target on the same group is a
+// forwarding loop, so adds are refused when the group is already configured.
+function currentRole(cfg, groupId) {
+  if (cfg.sourceGroupIds.includes(groupId)) return "source";
+  const pl = cfg.pipelines.find((p) => p.targetGroups.includes(groupId));
+  return pl ? `target of ${pl.name}` : null;
+}
+
+app.get("/api/bot/:id/config", requireAuth, requireAdmin, scopeToBot, (req, res) => {
+  try {
+    const cfg = readBotConfig(botById(req.params.id).dir);
+    res.json({
+      ok: true,
+      sourceGroupIds: cfg.sourceGroupIds,
+      pipelines: cfg.pipelines.map((p) => ({
+        name: p.name, cityScope: p.cityScope, targetGroups: p.targetGroups,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// { action:"add"|"remove", role:"source"|"target", groupId, pipeline? }
+app.post("/api/bot/:id/config/group", requireAuth, requireAdmin, scopeToBot, (req, res) => {
+  const bot = botById(req.params.id);
+  const action   = String(req.body?.action || "");
+  const role     = String(req.body?.role || "");
+  const groupId  = String(req.body?.groupId || "").trim();
+  const pipeName = String(req.body?.pipeline || "").trim();
+
+  if (!["add", "remove"].includes(action)) return res.status(400).json({ error: "action must be add or remove" });
+  if (!["source", "target"].includes(role)) return res.status(400).json({ error: "role must be source or target" });
+  if (!groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
+
+  try {
+    const cfg = readBotConfig(bot.dir);
+    let message;
+
+    if (action === "add") {
+      const held = currentRole(cfg, groupId);
+      if (held) return res.status(400).json({ error: `Already configured as ${held} — remove it first` });
+
+      if (role === "source") {
+        cfg.sourceGroupIds.push(groupId);
+        message = `Added as source (${cfg.sourceGroupIds.length} total)`;
+      } else {
+        const pl = cfg.pipelines.find((p) => p.name === pipeName);
+        if (!pl) return res.status(400).json({ error: `Unknown pipeline "${pipeName}"` });
+        pl.targetGroups.push(groupId);
+        message = `Added as target of ${pl.name} (${pl.targetGroups.length} in that pipeline)`;
+      }
+    } else if (role === "source") {
+      const n = cfg.sourceGroupIds.length;
+      cfg.sourceGroupIds = cfg.sourceGroupIds.filter((g) => g !== groupId);
+      if (cfg.sourceGroupIds.length === n) return res.status(404).json({ error: "Not a source group" });
+      message = `Removed from sources (${cfg.sourceGroupIds.length} left)`;
+    } else {
+      // "*" = caller does not care which pipeline (group is only in one).
+      const pl = pipeName && pipeName !== "*"
+        ? cfg.pipelines.find((p) => p.name === pipeName)
+        : cfg.pipelines.find((p) => p.targetGroups.includes(groupId));
+      if (!pl || !pl.targetGroups.includes(groupId)) {
+        return res.status(404).json({ error: "Not a target of that pipeline" });
+      }
+      if (pl.targetGroups.length === 1) {
+        return res.status(400).json({
+          error: `Can't remove the last target of "${pl.name}" — a pipeline needs at least one`,
+        });
+      }
+      pl.targetGroups = pl.targetGroups.filter((g) => g !== groupId);
+      message = `Removed from ${pl.name} (${pl.targetGroups.length} left)`;
+    }
+
+    // Same validator the bots use, so the panel can never write a config that a
+    // running bot would reject (or that would kill it on the next restart).
+    const errs = validateGroupFields(cfg);
+    if (errs.length) return res.status(400).json({ error: errs.join("; ") });
+
+    writeBotConfig(bot.dir, cfg);
+    audit(who(req), `config-${action}-${role}`, `${bot.id} ${groupId}${pipeName ? " " + pipeName : ""}`);
+    res.json({ ok: true, message: message + " — live in a couple of seconds" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ============================================================================
 // ROUTES — shared block list (append-only for friends, full control for admin)

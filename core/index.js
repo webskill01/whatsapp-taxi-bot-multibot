@@ -42,6 +42,45 @@ import { getMessageFingerprint } from "./filter.js";
 import { processMessage } from "./router.js";
 import { GLOBAL_CONFIG } from "./globalConfig.js";
 import { initRuntimeState } from "./runtimeState.js";
+import { watchConfigGroups } from "./configLoader.js";
+
+// Resolved group subjects (id -> name), persisted to <botDir>/group-names.json.
+// groupFetchAllParticipating often returns an empty subject for large accounts;
+// groupMetadata fixes it but is rate-limited, so every name we ever resolve is
+// written to disk and reused across restarts — /groups only fetches the ones it
+// has never seen.
+// ponytail: a cached name refreshes whenever WhatsApp returns a real subject
+// again; a renamed group that only ever comes back blank keeps the old name until
+// group-names.json is deleted. Delete the file to force a full re-fetch.
+const groupNameCache = new Map();
+let groupNamesPath = null;
+
+function loadGroupNames(botDir, log) {
+  groupNamesPath = path.join(botDir, "group-names.json");
+  try {
+    if (fs.existsSync(groupNamesPath)) {
+      for (const [id, name] of Object.entries(JSON.parse(fs.readFileSync(groupNamesPath, "utf8")))) {
+        groupNameCache.set(id, name);
+      }
+      log.info(`📇 Group names loaded: ${groupNameCache.size} cached`);
+    }
+  } catch (err) {
+    log.warn(`⚠️  group-names.json unreadable — starting empty: ${err.message}`);
+  }
+}
+
+function saveGroupNames(log) {
+  if (!groupNamesPath) return;
+  try {
+    fs.writeFileSync(groupNamesPath, JSON.stringify(Object.fromEntries(groupNameCache)) + "\n", "utf8");
+  } catch (err) {
+    log.warn(`⚠️  could not save group-names.json: ${err.message}`);
+  }
+}
+
+// "Unknown Group" and the ⚠️/❌ placeholders are failures, not names — never cache them.
+const isRealGroupName = (n) =>
+  typeof n === "string" && n.trim() !== "" && n !== "Unknown Group" && !/^[⚠❌]/.test(n);
 
 // =============================================================================
 // CONSTANTS
@@ -807,6 +846,46 @@ export async function startBot(config, log, authDir) {
           createdAt: chat.creation ? new Date(chat.creation * 1000).toISOString() : null,
         }));
 
+        // Names: serve from the on-disk cache first, then fetch (in small batches,
+        // to stay under WhatsApp's metadata rate limit) only the ones we have
+        // never resolved. Anything already cached costs zero calls.
+        let namesChanged = false;
+        for (const g of allGroups) {
+          if (isRealGroupName(g.name)) {
+            if (groupNameCache.get(g.id) !== g.name) {
+              groupNameCache.set(g.id, g.name);
+              namesChanged = true;
+            }
+          } else if (groupNameCache.has(g.id)) {
+            g.name = groupNameCache.get(g.id);
+          }
+        }
+
+        const unnamed = allGroups.filter((g) => !isRealGroupName(g.name));
+        const REFETCH_BATCH = 5;
+        const REFETCH_DELAY = 400; // ms between batches
+        for (let i = 0; i < unnamed.length; i += REFETCH_BATCH) {
+          await Promise.all(
+            unnamed.slice(i, i + REFETCH_BATCH).map(async (g) => {
+              try {
+                const metadata = await sock.groupMetadata(g.id);
+                if (metadata?.subject) {
+                  g.name = metadata.subject;
+                  g.participantsCount = metadata.participants?.length || g.participantsCount;
+                  groupNameCache.set(g.id, metadata.subject);
+                  namesChanged = true;
+                }
+              } catch (err) {
+                log.warn(`⚠️  Failed to fetch name for ${g.id}: ${err.message}`);
+              }
+            })
+          );
+          if (i + REFETCH_BATCH < unnamed.length) {
+            await new Promise((r) => setTimeout(r, REFETCH_DELAY));
+          }
+        }
+        if (namesChanged) saveGroupNames(log);
+
         const sourceSet = new Set(config.sourceGroupIds);
         const targetSet = new Set();
         
@@ -1009,6 +1088,11 @@ export async function startBot(config, log, authDir) {
   // Live control flags (pause / disabled target groups). Attached to config so
   // router.js can read them; mutated in place by the runtime.json watcher.
   config.runtime = initRuntimeState(config.botDir || process.cwd(), log);
+
+  // Live group lists — the control panel edits config.json, the bot picks the new
+  // source groups / pipeline targets up in ~1.3s without a restart or QR re-scan.
+  watchConfigGroups(config, log);
+  loadGroupNames(config.botDir || process.cwd(), log);
 
   loadFingerprints();
   startStatsServer();
