@@ -59,10 +59,22 @@ let groupNamesPath = null;
 // lookups makes real forwards fail with rate-overlimit. So /groups resolves at
 // most a handful of names per call, one at a time, and stops entirely for a while
 // the moment WhatsApp pushes back. Names are a display nicety; sends are not.
-const NAME_FETCH_PER_REQUEST = 6;      // max groupMetadata calls per /groups hit
-const NAME_FETCH_GAP         = 1200;   // ms between them (sequential, never parallel)
-const NAME_FETCH_COOLDOWN    = 15 * 60 * 1000;
+const NAME_FETCH_GAP      = 1200;              // ms after each successful lookup
+const NAME_FETCH_COOLDOWN = 15 * 60 * 1000;    // pause everything after a rate-overlimit
+const NAME_RESOLVE_EVERY  = 20 * 1000;         // one background lookup per 20s
 let nameFetchPausedUntil = 0;
+
+// Names are resolved OUT of band: /groups never calls groupMetadata, it just
+// queues what it could not name and returns instantly from the cache. A single
+// slow timer drains the queue at ~3 lookups/minute — far under the rate limit
+// that message sending needs — and each hit is written to group-names.json.
+const pendingNameIds   = new Set();
+const attemptedNameIds = new Set();   // asked once per process; failures aren't retried
+
+function queueNameLookup(groupId) {
+  if (!groupId || groupNameCache.has(groupId) || attemptedNameIds.has(groupId)) return;
+  pendingNameIds.add(groupId);
+}
 
 export async function metadataThrottled(sock, groupId, log) {
   if (Date.now() < nameFetchPausedUntil) return null;
@@ -898,24 +910,8 @@ export async function startBot(config, log, authDir) {
             }
           } else if (groupNameCache.has(g.id)) {
             g.name = groupNameCache.get(g.id);
-          }
-        }
-
-        // Resolve the still-nameless ones one at a time, within a small budget.
-        // Whatever is left keeps its "Unknown Group" label and gets picked up on a
-        // later panel open — each resolved name is cached to disk, so this converges.
-        const unnamed = allGroups.filter((g) => !isRealGroupName(g.name));
-        let fetchBudget = NAME_FETCH_PER_REQUEST;
-        for (const g of unnamed) {
-          if (fetchBudget <= 0) break;
-          const metadata = await metadataThrottled(sock, g.id, log);
-          if (!metadata) break;               // rate-limited or gone — stop for now
-          fetchBudget--;
-          if (metadata.subject) {
-            g.name = metadata.subject;
-            g.participantsCount = metadata.participants?.length || g.participantsCount;
-            groupNameCache.set(g.id, metadata.subject);
-            namesChanged = true;
+          } else {
+            queueNameLookup(g.id);
           }
         }
 
@@ -1128,6 +1124,30 @@ export async function startBot(config, log, authDir) {
   // source groups / pipeline targets up in ~1.3s without a restart or QR re-scan.
   watchConfigGroups(config, log);
   loadGroupNames(config.botDir || process.cwd(), log);
+
+  // Seed the queue with every configured group so names fill in on their own,
+  // even if nobody opens the panel.
+  for (const id of [
+    ...config.sourceGroupIds,
+    ...config.pipelines.flatMap((pl) => pl.targetGroups),
+  ]) queueNameLookup(id);
+
+  setInterval(async () => {
+    if (!sock || !botFullyOperational || pendingNameIds.size === 0) return;
+    if (Date.now() < nameFetchPausedUntil) return;   // rate-limited — keep the queue intact
+    const groupId = pendingNameIds.values().next().value;
+    pendingNameIds.delete(groupId);
+    attemptedNameIds.add(groupId);
+    const md = await metadataThrottled(sock, groupId, log);
+    if (md?.subject) {
+      groupNameCache.set(groupId, md.subject);
+      saveGroupNames(log);
+    } else if (Date.now() < nameFetchPausedUntil) {
+      // the rate limit tripped on THIS call — put it back for after the cooldown
+      attemptedNameIds.delete(groupId);
+      pendingNameIds.add(groupId);
+    }
+  }, NAME_RESOLVE_EVERY).unref?.();
 
   loadFingerprints();
   startStatsServer();
