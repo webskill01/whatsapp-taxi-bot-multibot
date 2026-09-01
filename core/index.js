@@ -38,7 +38,7 @@ import pino from "pino";
 import fs from "fs";
 import path from "path";
 
-import { getMessageFingerprint } from "./filter.js";
+import { getMessageFingerprint, stripBranding } from "./filter.js";
 import { processMessage } from "./router.js";
 import { GLOBAL_CONFIG } from "./globalConfig.js";
 import { initRuntimeState } from "./runtimeState.js";
@@ -62,6 +62,10 @@ let groupNamesPath = null;
 const NAME_FETCH_GAP      = 1200;              // ms after each successful lookup
 const NAME_FETCH_COOLDOWN = 15 * 60 * 1000;    // pause everything after a rate-overlimit
 const NAME_RESOLVE_EVERY  = 20 * 1000;         // one background lookup per 20s
+// Baileys fires its own init queries (fetchProps/fetchBlocklist/privacy) on
+// connection open. Our groupMetadata lookups share that IQ channel, and firing
+// them 18s after connect is what timed fetchProps out at 408. Names can wait.
+const NAME_RESOLVE_GRACE  = 90 * 1000;        // silence after each connect
 let nameFetchPausedUntil = 0;
 
 // Names are resolved OUT of band: /groups never calls groupMetadata, it just
@@ -195,6 +199,24 @@ export async function startBot(config, log, authDir) {
     cryptoErrors: 0,
     racePrevented: 0,
   };
+
+  // Groups this account is actually a participant of, from the one
+  // groupFetchAllParticipating() call the membership audit makes. null = not
+  // audited yet (never treat "unknown" as "not a member").
+  let joinedGroupIds = null;
+
+  // Unconfigured groups already reported — keeps the "not a source group" notice
+  // to one line per group instead of one per message.
+  const unmonitoredSeen = new Set();
+
+  // Every branding this bot must peel off an incoming ride: the fleet registry
+  // plus its own (so a message that loops back doesn't stack a second stamp).
+  const brandingsToStrip = [
+    ...new Set([
+      ...(GLOBAL_CONFIG.knownBrandings || []),
+      ...(config.brandingSuffixes || []),
+    ]),
+  ];
 
   // B1: Reconnect state tracking
   let lastReconnectTime = 0;
@@ -366,12 +388,20 @@ export async function startBot(config, log, authDir) {
     trackReplayId(msgId);
 
     // ── Extract text (done in index.js, not router) ──
-    const text =
+    // Strip any fleet branding IMMEDIATELY. Our bots forward each other's
+    // output, so most rides arrive already stamped. Everything downstream —
+    // fingerprint, keyword matching, city extraction — sees the clean ride, and
+    // only the send path re-stamps it. Stripping here (not at send) is what
+    // makes dedup work: the suffixes rotate, so an unstripped ride hashes
+    // differently per variant and the same ride forwards once per variant.
+    const rawText =
       msg.message?.conversation ||
       msg.message?.extendedTextMessage?.text ||
       msg.message?.imageMessage?.caption ||
       msg.message?.videoMessage?.caption ||
       "";
+
+    const text = stripBranding(rawText, brandingsToStrip);
 
     if (!text || text.trim() === "") {
       stats.rejectedEmptyBody++;
@@ -408,9 +438,16 @@ export async function startBot(config, log, authDir) {
     }
 
     // ── Source group monitoring check ──
+    // Logged ONCE per group: a silent drop here is indistinguishable from "no
+    // messages are arriving at all", which is exactly the case that wastes an
+    // afternoon. One line per unknown group, not per message.
     const isSourceGroup = config.sourceGroupIds.includes(sourceGroup);
     if (!isSourceGroup) {
       stats.rejectedNotMonitored++;
+      if (!unmonitoredSeen.has(sourceGroup)) {
+        unmonitoredSeen.add(sourceGroup);
+        log.info(`👀 Message from unconfigured group ${sourceGroup} — not a source group, ignoring`);
+      }
       return;
     }
 
@@ -645,10 +682,21 @@ export async function startBot(config, log, authDir) {
           keys: makeCacheableSignalKeyStore(authState.keys, baileysLogger),
         },
         logger: baileysLogger,
-        printQRInTerminal: true,
         browser: ["Taxi Bot", "Chrome", "120.0"],
         markOnlineOnConnect: false,
         syncFullHistory: false,
+        // THE reason a fresh pairing took ~10 min to deliver its first message.
+        // Baileys calls ev.buffer() at connection open and holds EVERY event —
+        // messages.upsert included — until the initial sync finishes. With the
+        // default (() => true) it waits for a history-sync notification, then
+        // awaits resyncAppState() before flushing; the 20s escape timer is
+        // cleared the moment that notification arrives, so there is no upper
+        // bound. Returning false makes Baileys flush immediately at connect
+        // (chats.js: "History sync is disabled by config").
+        // Safe here: this bot drops anything older than MAX_MESSAGE_AGE (5 min)
+        // and has a 10s reconnect age gate — it throws history away by design,
+        // and never touches app state (no chatModify / privacy / contact store).
+        shouldSyncHistoryMessage: () => false,
         getMessage: async () => undefined,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
@@ -729,6 +777,7 @@ export async function startBot(config, log, authDir) {
             log.info(`   ⏰ Max msg age:   ${MAX_MESSAGE_AGE / 1000}s`);
             log.info(`   📂 Fingerprint file: ${BOT_FINGERPRINT_FILENAME}`);
             log.info(`   🔀 Dual city routing: pickup AND drop both trigger pipelines`);
+            auditGroupMembership();
           }
         }
 
@@ -795,6 +844,49 @@ export async function startBot(config, log, authDir) {
   // ===========================================================================
   // STATS SERVER + ENDPOINTS (keeping existing endpoints)
   // ===========================================================================
+
+  // Every configured group the account is NOT in is dead weight: it can never
+  // deliver a message and every name lookup against it returns forbidden /
+  // item-not-found forever. One call at connect turns that into one log line.
+  // Runs once per process; a failure just leaves joinedGroupIds null.
+  async function auditGroupMembership() {
+    await new Promise((r) => setTimeout(r, NAME_RESOLVE_GRACE)); // let init queries finish
+    if (!sock) return;
+
+    let joined;
+    try {
+      joined = new Set(Object.keys(await sock.groupFetchAllParticipating()));
+    } catch (err) {
+      log.warn(`⚠️  Group membership audit skipped: ${err.message}`);
+      return;
+    }
+    joinedGroupIds = joined;
+
+    const targets = [...new Set(config.pipelines.flatMap((pl) => pl.targetGroups))];
+    const missingSources = config.sourceGroupIds.filter((id) => !joined.has(id));
+    const missingTargets = targets.filter((id) => !joined.has(id));
+
+    log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    log.info(`👥 Group membership audit — account is in ${joined.size} group(s)`);
+    log.info(`   📍 Source groups in config: ${config.sourceGroupIds.length}  |  joined: ${config.sourceGroupIds.length - missingSources.length}`);
+    log.info(`   🎯 Target groups in config: ${targets.length}  |  joined: ${targets.length - missingTargets.length}`);
+
+    if (missingSources.length) {
+      log.error(`❌ NOT A MEMBER of ${missingSources.length}/${config.sourceGroupIds.length} source group(s) — these can never deliver a message:`);
+      for (const id of missingSources) log.error(`      • ${id}`);
+    }
+    if (missingTargets.length) {
+      log.error(`❌ NOT A MEMBER of ${missingTargets.length}/${targets.length} target group(s) — sends to these will fail:`);
+      for (const id of missingTargets) log.error(`      • ${id}`);
+    }
+    if (missingSources.length === config.sourceGroupIds.length && config.sourceGroupIds.length > 0) {
+      log.error("❌ ZERO configured source groups matched. The scanned WhatsApp number is almost certainly not the one these group IDs belong to — re-pair with the correct number, or re-pick the groups in the control panel.");
+    }
+    if (!missingSources.length && !missingTargets.length) {
+      log.info("   ✅ Every configured group is joined");
+    }
+    log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  }
 
   function startStatsServer() {
     const statsPort = parseInt(
@@ -898,7 +990,29 @@ export async function startBot(config, log, authDir) {
           name: chat.subject || "Unknown Group",
           participantsCount: chat.participants?.length || 0,
           createdAt: chat.creation ? new Date(chat.creation * 1000).toISOString() : null,
+          joined: true,
         }));
+
+        // Configured groups the bulk call did NOT return — we were removed from
+        // them, or they were deleted. They are invisible otherwise: they can
+        // never deliver or accept a message, yet they sit in config.json
+        // burning a name lookup every restart. Surface them so they can be
+        // removed from the config. Uses the on-disk name cache; never fetches.
+        const present = new Set(allGroups.map((g) => g.id));
+        const configuredIds = new Set([
+          ...config.sourceGroupIds,
+          ...config.pipelines.flatMap((pl) => pl.targetGroups),
+        ]);
+        for (const groupId of configuredIds) {
+          if (present.has(groupId)) continue;
+          allGroups.push({
+            id: groupId,
+            name: groupNameCache.get(groupId) || "⚠️ Removed / Unavailable",
+            participantsCount: 0,
+            createdAt: null,
+            joined: false,
+          });
+        }
 
         // Names: serve from the on-disk cache first — anything cached costs zero calls.
         let namesChanged = false;
@@ -930,6 +1044,7 @@ export async function startBot(config, log, authDir) {
           let category = "Unmonitored";
           let type = "other";
           let pipelineInfo = null;
+          const status = group.joined ? "ok" : "removed";
 
           if (sourceSet.has(group.id)) {
             category = "Source Group";
@@ -949,10 +1064,13 @@ export async function startBot(config, log, authDir) {
             }
           }
 
+          if (!group.joined) category += " ❌ (bot not in group)";
+
           return {
             ...group,
             category,
             type,
+            status,
             pipelineInfo,
           };
         });
@@ -964,6 +1082,8 @@ export async function startBot(config, log, authDir) {
         };
 
         categorized.sort((a, b) => {
+          // Removed groups first — they are the only rows that need action.
+          if (a.status !== b.status) return a.status === "removed" ? -1 : 1;
           const orderA = sortOrder[a.type] || 99;
           const orderB = sortOrder[b.type] || 99;
           if (orderA !== orderB) return orderA - orderB;
@@ -981,6 +1101,7 @@ export async function startBot(config, log, authDir) {
             source: categorized.filter((g) => g.type === "source").length,
             target: categorized.filter((g) => g.type === "target").length,
             unmonitored: categorized.filter((g) => g.type === "other").length,
+            removed: categorized.filter((g) => g.status === "removed").length,
           },
           pipelines: config.pipelines.map(p => ({
             name: p.name,
@@ -1134,10 +1255,13 @@ export async function startBot(config, log, authDir) {
 
   setInterval(async () => {
     if (!sock || !botFullyOperational || pendingNameIds.size === 0) return;
+    if (Date.now() - lastReconnectTime < NAME_RESOLVE_GRACE) return;  // let init queries finish
     if (Date.now() < nameFetchPausedUntil) return;   // rate-limited — keep the queue intact
     const groupId = pendingNameIds.values().next().value;
     pendingNameIds.delete(groupId);
     attemptedNameIds.add(groupId);
+    // A group the account isn't in only ever answers forbidden/item-not-found.
+    if (joinedGroupIds && !joinedGroupIds.has(groupId)) return;
     const md = await metadataThrottled(sock, groupId, log);
     if (md?.subject) {
       groupNameCache.set(groupId, md.subject);

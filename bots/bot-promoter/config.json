@@ -1,4 +1,6 @@
 {
+  "_branding": "Bot is not active. Empty = forwards unstamped, and any incoming stamp is still stripped. Add variants here AND to GLOBAL_CONFIG.knownBrandings to turn it on.",
+  "brandingSuffixes": [],
   "botPhone": "",
   "sourceGroupIds": [
     "REPLACE_WITH_SOURCE_GROUP@g.us"

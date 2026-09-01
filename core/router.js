@@ -27,6 +27,7 @@ import {
   hasPhoneNumber,
   containsBlockedNumber,
   applyPromo,         // promoter bot: number → app link transform
+  applyBranding,      // strip whoever stamped it, sign it ourselves
 } from "./filter.js";
 
 import { GLOBAL_CONFIG } from "./globalConfig.js";
@@ -451,6 +452,14 @@ export async function processMessage(sock, text, sourceGroup, config, stats, log
       outboundText = promoText;
       log.info(`📣 Promo active — replaced ${replaced} number(s) with app link`);
     }
+
+    // Our own stamp goes on LAST, after any promo rewrite. Ingest already
+    // stripped the sender's branding, so this appends exactly one.
+    outboundText = applyBranding(
+      outboundText,
+      config.brandingSuffixes,
+      GLOBAL_CONFIG.knownBrandings
+    );
 
     let routedToPipeline = false;
     let totalSent = 0;

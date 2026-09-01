@@ -1,4 +1,13 @@
 {
+  "_branding": "Appended to every forward. This bot's emoji identify it — no company name in the stamp — and the wordings rotate so the text is never a constant byte signature. Emoji sets are disjoint across the fleet, so an emoji names exactly one bot. Any stamp already on an incoming ride is stripped first (GLOBAL_CONFIG.knownBrandings) so it never stacks; register new variants there too or the fleet will stack them.",
+  "brandingSuffixes": [
+    "- 🚗 Forwarded Duty 🚗",
+    "- 🚗 Duty Forwarded 🚗",
+    "- 🚗 Forwarded ਡਿਊਟੀ 🚗",
+    "- ⭐ Forwarded Duty ⭐",
+    "- ⭐ Duty Forwarded ⭐",
+    "- ⭐ Forwarded ਡਿਊਟੀ ⭐"
+  ],
   "sourceGroupIds": [
   "120363424287416053@g.us",
   "120363418627914014@g.us",

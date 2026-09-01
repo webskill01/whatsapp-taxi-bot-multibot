@@ -579,6 +579,55 @@ export function applyPromo(text, appLink, ctaVariants) {
   return { text: out, replaced: count };
 }
 
+// =============================================================================
+// BRANDING — strip whoever stamped it last, sign it ourselves
+// =============================================================================
+
+/**
+ * Remove every known branding suffix from the end of a message, repeatedly.
+ *
+ * Our bots forward each other's output, so an incoming ride usually already
+ * carries another bot's stamp. Strip it at INGEST, before fingerprinting: the
+ * suffixes rotate, so an unstripped ride hashes differently per variant and
+ * dedup lets the same ride through three times.
+ */
+export function stripBranding(text, variants) {
+  if (!text || !Array.isArray(variants) || variants.length === 0) return text || "";
+
+  let base = text.replace(/\s+$/, "");
+  let peeled = true;
+  while (peeled) {
+    peeled = false;
+    for (const v of variants) {
+      if (v && base.endsWith(v)) {
+        base = base.slice(0, -v.length).replace(/\s+$/, "");
+        peeled = true;
+      }
+    }
+  }
+  return base;
+}
+
+/**
+ * Append this bot's own branding, rotating among its variants so the stamp is
+ * not a byte-for-byte constant signature.
+ *
+ * Idempotent by construction: strips all known brandings (the fleet registry
+ * plus our own) before appending exactly one. Re-branding an already-branded
+ * message is a no-op in count, never a stack.
+ */
+export function applyBranding(text, ownVariants, knownVariants = []) {
+  const own = Array.isArray(ownVariants) ? ownVariants.filter(Boolean) : [];
+  const all = [...new Set([...own, ...(knownVariants || [])])];
+
+  const base = stripBranding(text, all);
+  if (own.length === 0) return base;   // nothing configured → strip only
+
+  return `${base}
+
+${own[Math.floor(Math.random() * own.length)]}`;
+}
+
 /**
  * 🔒 Anti-ban hardening
  * Generates a text-based fingerprint for deduplication.

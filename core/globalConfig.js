@@ -48,6 +48,47 @@ const _blockedData = loadBlockedData();
 
 export const GLOBAL_CONFIG = {
   /**
+   * Fleet-wide branding registry — EVERY suffix any of our bots appends.
+   *
+   * Our bots read each other's output (oracle forwards into groups this bot
+   * watches). Without a shared list each hop would stack another stamp, and
+   * because the variants rotate, the same ride would hash to a different
+   * fingerprint per variant and slip past dedup. So the incoming text is
+   * stripped of ALL known brandings before anything else touches it, and each
+   * bot appends exactly one of its own at send time.
+   *
+   * Add a new bot's suffixes here as well as in its config.json, or the rest of
+   * the fleet will not know to strip them.
+   */
+  knownBrandings: [
+    // oracle-v2 (bot-taxi)
+    "- 🚨 Forwarded Duty 🚨",
+    "- 📢 Forward Duty 📢",
+    "- 🚨 Forwarded ਡਿਊਟੀ 🚨",
+    // bot-delhi
+    "- 🚕 Forwarded Duty 🚕",
+    "- 🚕 Duty Forwarded 🚕",
+    "- 🚕 Forwarded ਡਿਊਟੀ 🚕",
+    "- 🔔 Forwarded Duty 🔔",
+    "- 🔔 Duty Forwarded 🔔",
+    "- 🔔 Forwarded ਡਿਊਟੀ 🔔",
+    // bot-sachin
+    "- 🚗 Forwarded Duty 🚗",
+    "- 🚗 Duty Forwarded 🚗",
+    "- 🚗 Forwarded ਡਿਊਟੀ 🚗",
+    "- ⭐ Forwarded Duty ⭐",
+    "- ⭐ Duty Forwarded ⭐",
+    "- ⭐ Forwarded ਡਿਊਟੀ ⭐",
+    // bot-aayush
+    "- 📍 Forwarded Duty 📍",
+    "- 📍 Duty Forwarded 📍",
+    "- 📍 Forwarded ਡਿਊਟੀ 📍",
+    "- 🚙 Forwarded Duty 🚙",
+    "- 🚙 Duty Forwarded 🚙",
+    "- 🚙 Forwarded ਡਿਊਟੀ 🚙",
+  ],
+
+  /**
    * Taxi request keywords (normalized to lowercase)
    */
   requestKeywords: [

@@ -57,6 +57,8 @@
 
   .grp { display:flex; justify-content:space-between; gap:10px; padding:10px; border:1px solid var(--line); border-radius:11px; margin:7px 0; align-items:center; background:var(--bg2); flex-wrap:wrap; }
   .grp.newgrp { border-color:#2c4a36; background:rgba(52,211,153,.05); }
+  .grp.gone { border-color:#5a2b2b; background:rgba(248,113,113,.06); }
+  .pill.gone { background:rgba(248,113,113,.16); color:var(--red); }
   .grp.disabled { border-color:#5b2b2b; }
   .gmeta { min-width:0; flex:1; }
   .gname { font-size:13px; font-weight:550; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
@@ -348,11 +350,17 @@ async function showGroups(id){
 // Re-render from the list we already hold. An add/remove changes exactly one
 // row, so refetching would make the bot re-scan every group for nothing.
 function renderGroups(){
-  // Unmonitored groups first — those are the ones you are usually here to add.
-  const sorted = [...GROUPS].sort((a,b)=> (a.type==='other'?0:1) - (b.type==='other'?0:1));
+  // Kicked-out groups first (they need action), then unmonitored ones to add,
+  // then everything already wired up.
+  const rank = g => g.status === 'removed' ? 0 : g.type === 'other' ? 1 : 2;
+  const sorted = [...GROUPS].sort((a,b)=> rank(a) - rank(b) || (a.name||'').localeCompare(b.name||''));
   const unmonitored = GROUPS.filter(g=>g.type==='other').length;
+  const gone = GROUPS.filter(g=>g.status==='removed').length;
+  const goneNote = gone
+    ? ` · <span style="color:var(--red)">${gone} removed — bot is no longer in these, drop them from the config</span>`
+    : '';
   document.getElementById("grpBody").innerHTML =
-    `<div class="muted" style="margin-bottom:8px">${GROUPS.length} groups · ${unmonitored} new/unmonitored · add/remove applies live, no restart</div>`
+    `<div class="muted" style="margin-bottom:8px">${GROUPS.length} groups · ${unmonitored} new/unmonitored${goneNote} · add/remove applies live, no restart</div>`
     + sorted.map(groupRow).join("");
 }
 
@@ -360,15 +368,19 @@ function groupRow(g){
   // Source groups are the only ones that churn — you add new ones and drop the
   // ones you get kicked from. Pipeline targets are your own groups and never
   // change, so they get no buttons (the API still accepts them if needed).
+  const gone = g.status === 'removed';
   const btns = [`<button class="sm" onclick="copyId('${g.id}')">Copy ID</button>`];
-  if (g.type === 'other'){
+  if (gone){
+    // Dead config entry either way — offer the removal that matches its role.
+    btns.push(`<button class="sm danger" onclick="cfgGroup('remove','${g.type==='target'?'target':'source'}','${g.id}')">− Drop from config</button>`);
+  } else if (g.type === 'other'){
     btns.push(`<button class="sm go" onclick="cfgGroup('add','source','${g.id}')">+ Source</button>`);
   } else if (g.type === 'source'){
     btns.push(`<button class="sm danger" onclick="cfgGroup('remove','source','${g.id}')">− Remove</button>`);
   }
   const pipes = (g.pipelineInfo || []).map(p=>p.name).join(", ");
-  return `<div class="grp ${g.type==='other'?'newgrp':''}">
-    <div class="gmeta"><div class="gname">${esc(g.name)} <span class="pill ${g.type}">${esc(g.category)}</span>${pipes?` <span class="muted">${esc(pipes)}</span>`:''}</div>
+  return `<div class="grp ${gone?'gone':g.type==='other'?'newgrp':''}">
+    <div class="gmeta"><div class="gname">${esc(g.name)} <span class="pill ${gone?'gone':g.type}">${esc(g.category)}</span>${pipes?` <span class="muted">${esc(pipes)}</span>`:''}</div>
       <div class="gid">${esc(g.id)}</div></div>
     <div class="gbtns">${btns.join("")}</div>
   </div>`;
@@ -380,7 +392,9 @@ async function cfgGroup(action, role, groupId){
   toast(r.message || r.error || "done");
   if (!r.ok) return;
   const g = GROUPS.find(x => x.id === groupId);
-  if (g){
+  if (g && g.status === 'removed'){
+    GROUPS = GROUPS.filter(x => x.id !== groupId);   // dead entry, nothing left to show
+  } else if (g){
     const added = action === 'add';
     g.type     = added ? 'source' : 'other';
     g.category = added ? 'Source Group' : 'Unmonitored';
