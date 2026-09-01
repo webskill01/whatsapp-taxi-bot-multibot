@@ -9,8 +9,7 @@
 //
 //   bot-delhi   → starts at   0s  (port 3001)
 //   bot-sachin  → starts at  20s  (port 3002)
-//   bot-manny   → starts at  40s  (port 3003)
-//   bot-aayush → starts at  60s  (port 3004)  ← was wrongly 40s, now fixed
+//   bot-aayush  → starts at  40s  (port 3004)
 //
 // Adding a new bot = duplicate the nearest block, update:
 //   name, script, log paths, STATS_PORT, start_delay (+20000 from last)
@@ -107,48 +106,7 @@ module.exports = {
     },
 
     // =========================================================================
-    // bot-manny  [starts at 40s]
-    // =========================================================================
-    {
-      name: "bot-manny",
-      script: "./bots/bot-manny/start.js",
-      cwd: "./",
-
-      instances: 1,
-      exec_mode: "fork",
-
-      autorestart: true,
-      watch: false,
-      restart_delay: 8000,
-      exp_backoff_restart_delay: 100,
-      min_uptime: 20000,
-      max_restarts: 5,
-
-      kill_timeout: 15000,
-      kill_signal: "SIGTERM",
-      shutdown_with_message: true,
-
-      max_memory_restart: "500M",
-
-      start_delay: 40000,           // 20s after bot-sachin
-
-      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      error_file: "./logs/bot-manny-error.log",
-      out_file: "./logs/bot-manny-out.log",
-      merge_logs: true,
-      log_type: "raw",
-
-      env: {
-        NODE_ENV: "production",
-        TZ: "Asia/Kolkata",
-        NODE_OPTIONS: "--max-old-space-size=480",
-        BOT_NAME: "bot-manny",
-        STATS_PORT: "3003",
-      },
-    },
-
-    // =========================================================================
-    // bot-aayush  [starts at 60s]  ← FIXED: was incorrectly 40s (same as manny)
+    // bot-aayush  [starts at 40s]
     // =========================================================================
     {
       name: "bot-aayush",
@@ -171,7 +129,7 @@ module.exports = {
 
       max_memory_restart: "500M",
 
-      start_delay: 60000,           // 20s after bot-manny ← FIXED from 40000
+      start_delay: 40000,           // 20s after bot-sachin
 
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
       error_file: "./logs/bot-aayush-error.log",
@@ -189,7 +147,7 @@ module.exports = {
     },
 
     // =========================================================================
-    // bot-promoter  [starts at 80s, port 3005]  ← app-promotion bot
+    // bot-promoter  [starts at 60s, port 3005]  ← app-promotion bot
     // Forwards rides normally during warm-up, then (once promoMode activates)
     // rewrites the caller's number into the app link. See bots/bot-promoter/
     // config.json — fill in real source/trial group IDs before starting.
@@ -215,7 +173,7 @@ module.exports = {
 
       max_memory_restart: "500M",
 
-      start_delay: 80000,           // 20s after bot-aayush
+      start_delay: 60000,           // 20s after bot-aayush
 
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
       error_file: "./logs/bot-promoter-error.log",

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 node bots/bot-delhi/start.js
 node bots/bot-sachin/start.js
-node bots/bot-manny/start.js
+node bots/bot-aayush/start.js
 ```
 
 ### PM2 process management (production)
@@ -38,8 +38,8 @@ bots/
     .env           # BOT_NAME, QR_SERVER_PORT, STATS_PORT
     baileys_auth/  # WhatsApp session (auto-created, gitignored)
   bot-sachin/      # Same structure
-  bot-manny/
-  bot-devansh/
+  bot-aayush/
+  bot-promoter/
 ```
 
 ### Core engine (`core/`)
@@ -100,8 +100,8 @@ Group IDs must end with `@g.us`. The same message can match multiple pipelines.
 Bots must start with 20s gaps to avoid WhatsApp simultaneous connection detection:
 - bot-delhi: 0s (port 3001)
 - bot-sachin: 20s (port 3002)
-- bot-manny: 40s (port 3003)
-- bot-devansh: 60s (port 3004)
+- bot-aayush: 40s (port 3004)
+- bot-promoter: 60s (port 3005)
 
 Each bot exposes a QR code HTTP endpoint at its `STATS_PORT` for initial WhatsApp pairing.
 
