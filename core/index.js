@@ -198,6 +198,7 @@ export async function startBot(config, log, authDir) {
     pipelineMatches: 0,
     cryptoErrors: 0,
     racePrevented: 0,
+    unavailablePlaceholders: 0,
   };
 
   // Groups this account is actually a participant of, from the one
@@ -224,6 +225,12 @@ export async function startBot(config, log, authDir) {
 
   // A4: Settling state
   let needsSettlingDelay = true;
+
+  // Silence watchdog: a reconnect can leave the socket "open" while WhatsApp
+  // delivers nothing (or only undecryptable stubs). Busy source groups never go
+  // quiet for 15 min, so treat that as dead and let PM2 start a fresh process.
+  const SILENCE_LIMIT_MS = 15 * 60_000;
+  let lastRealMessageAt  = Date.now();
 
   // C2: Debounced disk write
   let fingerprintDirty = false;
@@ -259,6 +266,18 @@ export async function startBot(config, log, authDir) {
 
   const FINGERPRINT_FILE = NEW_FINGERPRINT_FILE;
   const BOT_FINGERPRINT_FILENAME = NEW_FINGERPRINT_FILENAME;
+
+  setInterval(() => {
+    if (!botFullyOperational || isShuttingDown) return;
+    const silentMs = Date.now() - lastRealMessageAt;
+    if (silentMs < SILENCE_LIMIT_MS) return;
+    log.error(`🐕 WATCHDOG: no readable message for ${Math.round(silentMs / 60_000)} min — restarting`);
+    gracefulShutdown("watchdog");
+  }, 60_000);
+
+  setInterval(() => {
+    log.info(`🔎 Unavailable (lost) group msgs: ${stats.unavailablePlaceholders} | processed: ${stats.totalProcessed}`);
+  }, 10 * 60_000);
 
   // ===========================================================================
   // C2: FINGERPRINT DISK PERSISTENCE (debounced)
@@ -697,6 +716,12 @@ export async function startBot(config, log, authDir) {
         // and has a 10s reconnect age gate — it throws history away by design,
         // and never touches app state (no chatModify / privacy / contact store).
         shouldSyncHistoryMessage: () => false,
+        // Only groups matter. Copies of the phone's own 1:1 chats fail to decrypt
+        // (Bad MAC), never get acked, and WhatsApp kills the stream over them
+        // ("Stream Errored (ack)"). Ignored jids are acked without decrypting.
+        // Baileys always exempts @s.whatsapp.net (prekeys, server).
+        // Group retry receipts and sender keys arrive from the group jid: kept.
+        shouldIgnoreJid: (jid) => !!jid && !jid.endsWith("@g.us"),
         getMessage: async () => undefined,
         defaultQueryTimeoutMs: 60000,
         connectTimeoutMs: 60000,
@@ -823,7 +848,17 @@ export async function startBot(config, log, authDir) {
       // =======================================================================
 
       sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        // Diagnostic: group messages WhatsApp delivered empty ("unavailable"). Baileys
+        // asks the phone to resend them, but shouldIgnoreJid drops the phone's reply,
+        // so each one counted here is a message the bot never gets to see.
+        for (const m of messages) {
+          if (!m.message && m.key.remoteJid?.endsWith("@g.us") &&
+              m.messageStubParameters?.[0] === "Message absent from node") {
+            stats.unavailablePlaceholders++;
+          }
+        }
         if (type !== "notify") return;
+        if (messages.some((m) => m.message)) lastRealMessageAt = Date.now();
 
         for (const msg of messages) {
           try {
